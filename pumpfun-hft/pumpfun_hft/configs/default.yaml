@@ -1,0 +1,620 @@
+# =============================================================================
+# pumpfun-hft default configuration — the single source of truth for every
+# tunable parameter. Every key is REQUIRED by the typed schema in
+# core/config.py (missing keys fail validation; unknown keys are rejected).
+# Override with a user YAML (`--config my.yaml`, deep-merged) or dotted
+# overrides (`--set backtest.initial_capital_sol=5`).
+# Units: SOL amounts in SOL, *_lamports in lamports, *_bps in basis points,
+# *_ms milliseconds, *_s seconds, *_pct percent.
+# =============================================================================
+
+app:
+  name: pumpfun-hft
+  mode: paper                 # paper | live   (live also requires --confirm-live)
+  seed: 42
+
+paths:                        # relative paths are anchored at the project root
+  data_dir: data
+  events_subdir: events       # Parquet, hive-partitioned by date=YYYY-MM-DD
+  metadata_subdir: metadata   # token metadata Parquet
+  duckdb_file: data/warehouse.duckdb
+  sqlite_file: data/meta.sqlite
+  logs_dir: pumpfun_hft/logs
+  reports_dir: pumpfun_hft/reports
+  models_dir: data/models
+  idl_dir: pumpfun_hft/core/idl
+
+# ----------------------------------------------------------------------------- network
+network:
+  user_agent: pumpfun-hft/0.1
+  metis:
+    mode: public              # public (Mode A) | authenticated (Mode B, JWT + METIS_URL)
+    public_url: https://public.jupiterapi.com
+    public_sunset_date: "2026-10-14"   # QuickNode announced the public endpoint shuts down on this date
+    public_platform_fee_bps: 20        # public endpoint applies a platform fee on swaps; verify & adjust
+    timeout_s: 5.0
+    rate_limit: {rps: 4.0, burst: 4}
+    priority_fee_levels: {normal: medium, high: high, exit: extreme}
+  rpc:
+    timeout_s: 8.0
+    rate_limit: {rps: 25.0, burst: 50}
+    commitment: confirmed
+    batch_size: 50
+    max_concurrency: 8
+  ws:
+    commitment: processed
+    ping_interval_s: 20.0
+    ping_timeout_s: 20.0
+    reconnect_base_delay_s: 0.5
+    reconnect_max_delay_s: 20.0
+    max_queue: 200000
+  pumpfun_frontend:           # unofficial API; endpoints may change without notice
+    enabled: false
+    base_url: https://frontend-api-v3.pump.fun
+    coin_path: /coins/{mint}
+    user_path: /users/{address}
+    timeout_s: 5.0
+    rate_limit: {rps: 2.0, burst: 2}
+  retry:
+    max_attempts: 5
+    base_delay_s: 0.2
+    max_delay_s: 5.0
+    retry_statuses: [408, 425, 429, 500, 502, 503, 504]
+  http_breaker:
+    failure_threshold: 8
+    reset_timeout_s: 30.0
+  jwt:
+    algorithm: RS256
+    lifetime_s: 3600
+    refresh_margin_s: 120
+
+# ----------------------------------------------------------------------------- protocol
+protocol:
+  pump_program_id: 6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P
+  pump_amm_program_id: pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA
+  pump_fees_program_id: pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ
+  sol_mint: So11111111111111111111111111111111111111112
+  token_decimals: 6
+  sol_decimals: 9
+  curve:                      # Global account initial curve parameters
+    initial_virtual_token_reserves: 1073000000000000
+    initial_virtual_sol_reserves: 30000000000
+    initial_real_token_reserves: 793100000000000
+    token_total_supply: 1000000000000000
+  # Bonding-curve fee schedule (pump.fun/docs/fees, May 2026): 0.95% protocol + 0.30% creator.
+  # Live mode refreshes tiers from the on-chain FeeConfig; backtests on real data prefer the
+  # fee bps recorded in each TradeEvent (fees.source).
+  curve_fee_tiers:
+    - {mcap_sol: 0, protocol_bps: 95, creator_bps: 30, lp_bps: 0}
+  # PumpSwap canonical-pool tiers decoded from mainnet FeeConfig 5PHirr8j... (captured 2026-09-08)
+  amm_fee_tiers:
+    - {mcap_sol: 0,     lp_bps: 2,  protocol_bps: 93, creator_bps: 30}
+    - {mcap_sol: 420,   lp_bps: 20, protocol_bps: 5,  creator_bps: 95}
+    - {mcap_sol: 1470,  lp_bps: 20, protocol_bps: 5,  creator_bps: 90}
+    - {mcap_sol: 2460,  lp_bps: 20, protocol_bps: 5,  creator_bps: 85}
+    - {mcap_sol: 3440,  lp_bps: 20, protocol_bps: 5,  creator_bps: 80}
+    - {mcap_sol: 4420,  lp_bps: 20, protocol_bps: 5,  creator_bps: 75}
+    - {mcap_sol: 9820,  lp_bps: 20, protocol_bps: 5,  creator_bps: 70}
+    - {mcap_sol: 14740, lp_bps: 20, protocol_bps: 5,  creator_bps: 65}
+    - {mcap_sol: 19650, lp_bps: 20, protocol_bps: 5,  creator_bps: 60}
+    - {mcap_sol: 24560, lp_bps: 20, protocol_bps: 5,  creator_bps: 55}
+    - {mcap_sol: 29470, lp_bps: 20, protocol_bps: 5,  creator_bps: 50}
+    - {mcap_sol: 34380, lp_bps: 20, protocol_bps: 5,  creator_bps: 45}
+    - {mcap_sol: 39300, lp_bps: 20, protocol_bps: 5,  creator_bps: 40}
+    - {mcap_sol: 44210, lp_bps: 20, protocol_bps: 5,  creator_bps: 35}
+    - {mcap_sol: 49120, lp_bps: 20, protocol_bps: 5,  creator_bps: 30}
+    - {mcap_sol: 54030, lp_bps: 20, protocol_bps: 5,  creator_bps: 28}
+    - {mcap_sol: 58940, lp_bps: 20, protocol_bps: 5,  creator_bps: 25}
+    - {mcap_sol: 63860, lp_bps: 20, protocol_bps: 5,  creator_bps: 23}
+    - {mcap_sol: 68770, lp_bps: 20, protocol_bps: 5,  creator_bps: 20}
+    - {mcap_sol: 73681, lp_bps: 20, protocol_bps: 5,  creator_bps: 18}
+    - {mcap_sol: 78590, lp_bps: 20, protocol_bps: 5,  creator_bps: 15}
+    - {mcap_sol: 83500, lp_bps: 20, protocol_bps: 5,  creator_bps: 13}
+    - {mcap_sol: 88400, lp_bps: 20, protocol_bps: 5,  creator_bps: 10}
+    - {mcap_sol: 93330, lp_bps: 20, protocol_bps: 5,  creator_bps: 8}
+    - {mcap_sol: 98240, lp_bps: 20, protocol_bps: 5,  creator_bps: 5}
+  amm_flat_fees: {mcap_sol: 0, lp_bps: 25, protocol_bps: 5, creator_bps: 0}   # non-canonical pools
+  amm_event_reserves: pre     # whether PumpSwap Buy/SellEvent reserves are pre- or post-trade
+  migration_fee_lamports: 15000001
+
+# ----------------------------------------------------------------------------- execution costs
+fees:
+  source: observed_if_available   # use fee bps recorded in TradeEvents when replaying real data
+  base_fee_lamports_per_signature: 5000
+  platform_fee_bps: null          # router fee on the SOL leg; null = network.metis.public_platform_fee_bps in Mode A, 0 in Mode B
+  token_account_rent_lamports: 2039280
+  charge_token_account_rent: true
+  close_token_account_on_exit: true   # rent refunded when the ATA is closed after a full exit
+  user_volume_accumulator_rent_lamports: 1844400
+  buy_instruction: buy_exact_sol_in   # buy_exact_sol_in (budget in, min tokens out) | buy (tokens out, max SOL in)
+
+slippage:
+  buy_bps: 1500
+  sell_bps: 1500
+  exit_bps: 3000
+  max_bps: 5000
+  retry_widen_bps: 500
+
+priority_fee:
+  mode: dynamic               # fixed | dynamic (live: percentile of getRecentPrioritizationFees)
+  compute_unit_limit: 140000
+  fixed_micro_lamports: 250000
+  dynamic_percentile: 75
+  min_micro_lamports: 10000
+  max_micro_lamports: 5000000
+  urgency_multiplier: {normal: 1.0, high: 2.0, exit: 3.0}
+  retry_bump_factor: 1.5
+  refresh_interval_s: 2.0
+
+jito:
+  enabled: false
+  block_engine_url: https://mainnet.block-engine.jito.wtf
+  tip_mode: fixed             # fixed | floor_percentile
+  tip_lamports: 100000
+  tip_floor_url: https://bundles.jito.wtf/api/v1/bundles/tip_floor
+  tip_floor_field: landed_tips_75th_percentile
+  min_tip_lamports: 1000
+  max_tip_lamports: 2000000
+  rate_limit: {rps: 1.0, burst: 1}
+
+# ----------------------------------------------------------------------------- simulation realism
+simulation:
+  slot_ms: 400
+  impact_model: persistent    # our own trades move the curve and the impact persists until we exit
+  latency:                    # lognormal components (median ms, sigma of log)
+    decision_ms: {median_ms: 1.0, sigma: 0.5}
+    network_ms: {median_ms: 35.0, sigma: 0.5}
+    rpc_ms: {median_ms: 25.0, sigma: 0.6}
+    inclusion_ms: {median_ms: 500.0, sigma: 0.7}
+    jito_inclusion_ms: {median_ms: 650.0, sigma: 0.5}
+    confirmation_ms: {median_ms: 700.0, sigma: 0.4}
+    priority_speedup: 0.35    # max fractional reduction of inclusion latency at the max priority fee
+    spike_prob: 0.01
+    spike_multiplier: 8.0
+  failures:
+    drop_prob: 0.03           # never lands before blockhash expiry (no fee charged)
+    landed_fail_prob: 0.015   # lands but fails for non-slippage reasons (fees charged)
+    congestion_events_per_s: 40.0
+    congestion_multiplier: 3.0
+    blockhash_ttl_ms: 60000
+    jito_bundle_fail_prob: 0.15
+  outages:
+    rate_per_hour: 0.05
+    mean_duration_s: 60.0
+    behavior: reject          # reject | delay
+  rate_limit:
+    max_orders_per_s: 5.0
+    burst: 5
+    behavior: delay           # reject | delay
+  retries:
+    max_retries: 2
+    retry_on: [dropped, expired, rejected]
+    backoff_ms: 250
+
+backtest:
+  initial_capital_sol: 10.0
+  replay_mode: event          # event | trade | tick | candle
+  candle_interval_ms: 5000
+  mark_to_market: liquidation # liquidation (net exit value incl. fees & impact) | mid
+  equity_sample_ms: 60000
+  sweep_interval_ms: 1000     # periodic position checks for tokens without new events
+  default_order_type: market  # market | limit | ioc | fok
+  limit_offset_bps: 300       # limit price = decision price * (1 +/- offset)
+  limit_ttl_ms: 30000
+  force_close_at_end: true
+  min_order_sol: 0.01
+  cash_reserve_sol: 0.05
+  max_events: null
+  annualization_days: 365.0
+  returns_bar_ms: 300000      # bar size for Sharpe/Sortino return series (5 min: enough bars on short samples)
+  record_signals: true
+
+# ----------------------------------------------------------------------------- risk, sizing, exits
+risk:
+  limits:
+    daily_loss_sol: 2.0
+    hourly_loss_sol: 0.75
+    max_open_positions: 8
+    max_exposure_sol: 4.0
+    max_position_per_token_sol: 0.75
+    max_creator_exposure_sol: 1.0
+    max_sector_exposure_sol: 2.0
+    max_orders_per_token_per_min: 6
+  breakers:
+    rpc_latency_p90_ms: 1500.0
+    rpc_latency_window: 50
+    congestion_slot_ms: 900.0
+    slippage_bps_avg: 800.0
+    slippage_window: 20
+    failed_swaps_max: 6
+    failed_swaps_window_s: 300.0
+    drawdown_pct: 25.0
+    cooldown_s: 600.0
+    flatten_on_drawdown: true
+  sectors:
+    keywords:
+      ai: [ai, gpt, agent, bot, neural, agi]
+      animal: [dog, cat, frog, pepe, inu, doge, shib, bonk, wif, hamster]
+      political: [trump, maga, biden, president, vote, election]
+      celebrity: [elon, musk, kanye, drake, taylor]
+      culture: [meme, based, chad, wojak, gigachad, moon]
+    default: other
+
+sizing:
+  method: fixed_risk          # fixed | fixed_risk | kelly | volatility | confidence | max_exposure
+  fixed_sol: 0.25
+  risk_per_trade_sol: 0.06
+  kelly_fraction: 0.5
+  kelly_cap_frac: 0.08
+  kelly_min_trades: 30
+  vol_target_sol: 0.03
+  vol_floor: 0.05
+  confidence_scaling: true
+  confidence_exponent: 1.0
+  min_confidence: 55.0
+  max_impact_bps: 600.0       # cap size so the entry's own price impact stays below this
+  max_equity_frac: 0.1
+
+position:
+  stop_loss_pct: 25.0
+  take_profit:                # partial exits (SCALE_OUT); last level closes the remainder
+    - {at_pct: 40.0, sell_frac: 0.4}
+    - {at_pct: 100.0, sell_frac: 0.35}
+    - {at_pct: 250.0, sell_frac: 1.0}
+  trailing_stop: {enabled: true, activation_pct: 30.0, trail_pct: 20.0}
+  max_hold_s: 900.0
+  breakeven_after_first_tp: true
+  exit_on_curve_complete: false
+  pyramiding: {enabled: false, max_adds: 2, add_trigger_pct: 20.0, add_size_frac: 0.5, min_confidence: 70.0}
+
+# ----------------------------------------------------------------------------- research modules
+features:
+  short_window_ms: 5000
+  medium_window_ms: 30000
+  long_window_ms: 120000
+  fast_half_life_ms: 3000.0
+  slow_half_life_ms: 30000.0
+  bar_ms: 5000
+  atr_bars: 14
+  whale_trade_sol: 2.0
+  aggressive_impact_bps: 150.0
+  fresh_wallet_window_ms: 86400000
+  smart_score_threshold: 0.6
+  top_holders_k: 10
+  tps_half_life_ms: 10000.0
+
+discovery:
+  resolution_horizon_s: 3600.0
+  success_ath_multiple: 3.0
+  rug_drawdown_pct: 80.0          # rug = liquidity (real SOL) drawdown from peak >= this AND creator sold >= below
+  rug_creator_sold_pct: 50.0
+  creator_prior_alpha: 1.0
+  creator_prior_beta: 4.0
+  rug_prior_alpha: 1.0
+  rug_prior_beta: 2.0
+  experience_saturation: 10
+  duplicate_name_window_s: 3600.0
+  score_weights: {success: 0.45, rug_avoid: 0.35, experience: 0.10, metadata: 0.10}
+  metadata:
+    enabled: true
+    ipfs_gateways: [https://ipfs.io/ipfs/, https://dweb.link/ipfs/, https://gateway.pinata.cloud/ipfs/]
+    timeout_s: 3.0
+    max_concurrency: 16
+    cache_size: 50000
+
+wallet_intel:
+  min_closed_for_rank: 3          # round trips before a wallet gets a smart score
+  prior_strength: 5.0             # pseudo-trades of shrinkage toward a zero mean return
+  score_min_sd: 0.05              # floor on the round-trip return sd (a few identical wins are not certainty)
+  smart_label_min_score: 0.9      # "smart" label: P(mean round-trip return > 0) at least this
+  sniper_entry_s: 3.0             # an entry this soon after launch counts as a launch-slot entry
+  sniper_min_tokens: 5            # sniper: at least this many launch-slot entries ...
+  sniper_min_early_frac: 0.5      # ... making up at least this share of the tokens it traded
+  whale_avg_trade_sol: 3.0        # whale: average buy at least this size ...
+  whale_min_buys: 2               # ... over at least this many buys
+  mm_roundtrip_ratio: 0.8         # market maker: sells / buys within [r, 1/r] ...
+  mm_max_hold_s: 60.0             # ... average hold at most this ...
+  mm_min_closed: 5                # ... over at least this many round trips
+  bot_min_trades_per_hour: 60.0   # bot: sustained trade rate ...
+  bot_min_trades: 20              # ... measured over at least this many trades
+  insider_min_cobuys: 2
+  rug_wallet_min_rugs: 2
+  max_wallets_tracked: 2000000
+
+rug_model:
+  use_trained_model: false
+  model_path: data/models/rug_model.joblib
+  label_horizon_s: 1800.0
+  label_drawdown_pct: 80.0        # ML label: liquidity falls >= this % below the snapshot within the horizon
+  snapshot_delays_s: [10.0, 30.0, 60.0, 120.0]
+  heuristic_weights:          # logistic score = sigmoid(intercept + sum(w_i * x_i))
+    intercept: -3.2
+    creator_holding_pct: 0.03
+    creator_sold_pct: 0.035
+    top10_pct: 0.025
+    hhi: 2.0
+    sell_pressure: 1.2
+    liquidity_drop_pct: 0.02
+    bundled_buyers: 0.05            # every creation-slot buyer (snipers included)
+    bundled_unknown: 0.3            # creation-slot buyers that are not known snipers / bots
+    missing_socials: 0.6
+    duplicate_name: 0.7
+    creator_rug_rate: 2.5
+
+# ----------------------------------------------------------------------------- strategies
+strategy:
+  active: [momentum_ignition]
+  exit_overlay: rug_avoidance       # always-on defensive overlay (null to disable)
+  cost_gate_multiple: 1.5           # expected return must exceed this multiple of the round-trip cost
+  one_order_in_flight_per_token: true
+  reentry_cooldown_s: 60.0          # no new entry in a token for this long after fully exiting it (stops churn)
+  params:
+    momentum_ignition:
+      min_age_s: 5.0
+      max_age_s: 180.0
+      min_buy_sol: 4.0
+      min_imbalance: 0.35
+      min_unique_buyers: 6
+      min_momentum: 0.10
+      max_progress_pct: 70.0
+      max_rug_prob: 0.4
+      min_creator_score: 25.0
+      max_top10_pct: 60.0
+      exit_imbalance: -0.35
+      continuation: 0.8             # expected return = continuation * medium-window momentum
+    bonding_curve_scalp:
+      min_age_s: 20.0
+      max_age_s: 1800.0
+      min_progress_pct: 15.0
+      max_progress_pct: 85.0
+      dip_pct: 8.0
+      min_medium_imbalance: 0.1
+      max_rug_prob: 0.3
+      target_pct: 10.0
+      stop_pct: 7.0
+      max_hold_s: 120.0
+    liquidity_sweep:
+      sweep_min_sol: 3.0
+      sweep_impact_pct: 5.0
+      exhaustion_s: 10.0
+      follow_through_frac: 0.5
+      enable_entries: true
+      entry_pullback_pct: 15.0
+      reentry_imbalance: 0.3
+      max_rug_prob: 0.3
+      target_pct: 12.0
+      max_age_s: 3600.0
+    whale_follow:
+      min_whale_buy_sol: 3.0
+      min_wallet_score: 0.55
+      min_wallet_closed: 3
+      max_age_s: 3600.0
+      max_progress_pct: 85.0
+      exit_on_whale_sell_frac: 0.5
+      expected_return_pct: 15.0
+      max_rug_prob: 0.35
+    smart_money:
+      min_smart_buyers: 2
+      window_s: 60.0
+      min_smart_score: 0.6
+      min_total_smart_sol: 0.5
+      max_age_s: 1800.0
+      max_progress_pct: 85.0
+      exit_smart_sell_frac: 0.5
+      expected_return_pct: 20.0
+      max_rug_prob: 0.4
+    mean_reversion:
+      min_age_s: 60.0
+      min_pump_multiple: 2.5
+      min_retrace_pct: 45.0
+      max_retrace_pct: 80.0
+      sell_exhaustion_ratio: 0.5
+      min_short_imbalance: 0.2
+      max_top10_pct: 50.0
+      target_retrace_frac: 0.3
+      max_rug_prob: 0.45
+    volume_breakout:
+      min_age_s: 30.0
+      max_age_s: 3600.0
+      volume_z: 3.0
+      min_short_volume_sol: 2.0
+      breakout_tolerance_pct: 1.0
+      min_imbalance: 0.3
+      max_rug_prob: 0.35
+      expected_return_pct: 12.0
+    rug_avoidance:
+      max_rug_prob: 0.6
+      creator_sell_pct: 20.0
+      liquidity_drop_pct: 30.0
+      liquidity_drop_min_sol: 2.0     # ...and at least this many SOL left the curve
+      top_holder_dump_pct: 50.0
+      top_holder_min_supply_pct: 3.0  # only holders with a meaningful bag (sniper flips of small bags are noise)
+      veto_entry_rug_prob: 0.45
+    migration:
+      min_progress_pct: 80.0
+      max_progress_pct: 98.0
+      min_imbalance: 0.3
+      min_buy_sol_medium: 5.0
+      hold_through_migration: true
+      post_migration_exit_s: 120.0
+      expected_return_pct: 15.0
+      max_rug_prob: 0.35
+    sniper:
+      max_entry_age_s: 3.0
+      min_creator_score: 40.0
+      require_socials: true
+      min_dev_buy_sol: 0.3
+      max_dev_buy_sol: 5.0
+      max_bundled_buyers: 3           # creation-slot buyers that are not known snipers / bots
+      allow_duplicate_names: false
+      size_sol: 0.1
+      expected_return_pct: 30.0
+      take_profit_pct: 50.0
+      stop_pct: 30.0
+      max_hold_s: 60.0
+      max_rug_prob: 0.4
+
+# ----------------------------------------------------------------------------- optimisation & validation
+optimizer:
+  method: bayesian            # grid | random | bayesian | genetic
+  n_trials: 40
+  objective: sharpe           # sharpe | sortino | profit_factor | expectancy | calmar | total_return | composite
+  min_trades: 15
+  max_drawdown_pct: 60.0
+  n_workers: 2
+  seed: 7
+  top_k: 5
+  selection: plateau          # best_validation | plateau (median of neighbours; resists knife-edge optima)
+  splits: {train: 0.5, validation: 0.2, test: 0.2, live_sim: 0.1, embargo_s: 1800.0}
+  walk_forward: {n_folds: 4, anchored: false, train_frac: 0.6, val_frac: 0.2, test_frac: 0.2, embargo_s: 1800.0}
+  bayesian: {n_initial: 10, n_candidates: 2048, xi: 0.01, restarts: 3}
+  genetic: {population: 20, generations: 8, crossover_prob: 0.8, mutation_prob: 0.25, mutation_scale: 0.15, tournament: 3, elite: 2}
+  grid: {points_per_dim: 3, max_points: 400}
+  spaces:
+    momentum_ignition:
+      min_buy_sol: {type: float, low: 1.0, high: 10.0}
+      min_imbalance: {type: float, low: 0.1, high: 0.8}
+      min_unique_buyers: {type: int, low: 2, high: 20}
+      min_momentum: {type: float, low: 0.02, high: 0.4}
+      max_age_s: {type: float, low: 30.0, high: 600.0}
+    volume_breakout:
+      volume_z: {type: float, low: 1.5, high: 6.0}
+      min_short_volume_sol: {type: log_float, low: 0.5, high: 10.0}
+      min_imbalance: {type: float, low: 0.0, high: 0.8}
+    smart_money:
+      min_smart_buyers: {type: int, low: 1, high: 5}
+      min_smart_score: {type: float, low: 0.5, high: 0.9}
+      window_s: {type: float, low: 10.0, high: 300.0}
+    sniper:
+      min_creator_score: {type: float, low: 10.0, high: 70.0}
+      max_bundled_buyers: {type: int, low: 0, high: 8}
+      require_socials: {type: categorical, choices: [true, false]}
+    mean_reversion:
+      min_pump_multiple: {type: float, low: 1.5, high: 5.0}
+      min_retrace_pct: {type: float, low: 30.0, high: 70.0}
+      sell_exhaustion_ratio: {type: float, low: 0.2, high: 1.0}
+
+montecarlo:
+  n_sims: 5000
+  method: bootstrap           # bootstrap | permutation | block_bootstrap
+  block_size: 5
+  slippage_sigma: 0.35        # lognormal sigma of the per-trade slippage-cost multiplier
+  fee_sigma: 0.10
+  latency_sigma: 0.5          # lognormal sigma of the per-trade latency multiplier
+  latency_cost_bps_per_100ms: 15.0
+  sizing_sigma: 0.25
+  ruin_equity_frac: 0.5       # "ruin" = equity falls below 50% of initial capital
+  quantiles: [0.05, 0.25, 0.5, 0.75, 0.95]
+  path_sims: 12               # full event-driven re-simulations with perturbed execution
+  path_latency_scale: [0.7, 2.0]
+  path_failure_scale: [0.5, 2.5]
+  seed: 11
+
+# ----------------------------------------------------------------------------- live
+live:
+  quote_source: local         # local exact curve math (fast) | metis (/pump-fun/quote, paid plans)
+  swap_route: metis_swap      # metis_swap (free/public) | metis_swap_instructions (paid; enables in-tx Jito tip)
+  send_via: rpc               # rpc | jito
+  queue_maxsize: 1000
+  workers: 4
+  confirm_commitment: confirmed
+  confirm_poll_ms: 400
+  confirm_timeout_ms: 90000
+  rebroadcast_ms: 800
+  blockhash_refresh_ms: 2000
+  max_retries: 3
+  quote_to_submit_budget_ms: 250.0
+  state_snapshot_s: 1.0
+  paper_initial_capital_sol: 10.0
+  curve_cache_ttl_ms: 1500
+  skip_preflight: true
+
+collector:
+  signatures_page_limit: 1000
+  tx_batch_size: 50
+  max_concurrency: 6
+  fetch_block_hash: false
+  max_signatures: 20000
+  flush_rows: 50000
+  flush_interval_s: 5.0
+  large_trade_sol: 5.0
+  watch_wallets_max: 20
+  gap_slot_threshold: 150
+  live_latency_budget_ms: 100.0
+  backfill_on_reconnect: true
+  include_failed_tx: false
+  subscribe_amm: true
+  sol_price_source: static    # static | csv (columns ts_ms, sol_usd)
+  sol_price_static_usd: 150.0
+  sol_price_csv: null
+
+logging:
+  level: INFO
+  max_bytes: 10485760
+  backup_count: 5
+  console: true
+  channels: [api, trades, errors, latency, signals, backtests, system]
+
+dashboard:
+  host: 127.0.0.1
+  port: 8050
+  live_refresh_ms: 1000
+  max_table_rows: 5000
+
+# ----------------------------------------------------------------------------- synthetic market (tests/demos only)
+synthetic:
+  seed: 1234
+  start: "2026-09-01T00:00:00Z"
+  duration_hours: 24.0
+  launches_per_hour: 30.0
+  n_creators: 250
+  creator_mix: {rugger: 0.25, legit: 0.15, neutral: 0.60}
+  n_wallets: 2500
+  wallet_mix: {sniper: 0.01, smart: 0.01, whale: 0.006, bot: 0.04, insider: 0.03, retail: 0.904}
+  max_token_life_s: 5400.0
+  base_trade_rate_hz: 0.7
+  activity_floor: 0.03               # flow intensity = base_rate * (floor + scale * quality^exponent) * exp(-age / life)
+  activity_scale: 3.5
+  activity_exponent: 4.0
+  excitation: 0.3
+  excitation_decay_s: 8.0
+  dev_buy_sol: [0.2, 3.0]
+  retail_trade_sol: [0.3, 0.9]      # lognormal [median SOL, sigma]
+  whale_trade_sol: [4.0, 0.5]
+  sniper_trade_sol: [0.5, 0.5]
+  smart_trade_sol: [0.7, 0.5]
+  sol_usd_start: 150.0
+  sol_usd_vol_daily: 0.04
+  amm_life_s: 1800.0
+  life_scale_s: 420.0
+  social_prob: {legit: 0.9, neutral: 0.55, rugger: 0.3}
+  rug_prob: {rugger: 0.85, neutral: 0.12, legit: 0.03}
+  rug_delay_s: [20.0, 400.0]
+  smart_signal_noise: 0.25
+  smart_entry_threshold: 0.8        # smart wallets are selective: they buy when noisy quality > threshold
+  sniper_participation: 0.3
+  sniper_slot0_frac: 0.7            # share of snipers landing in the creation slot (Jito bundles); the rest within ~2.5 s
+  whale_participation: 0.1          # per-whale probability (x quality) of buying a launch
+  sell_pressure: 0.4
+  frontrun_intensity: 0.5            # probability a competing bot reacts to a buy during a burst (scaled by excitation)
+  copytrade_mean: 2.5                # Poisson mean of fast copy-trade bots (40-350 ms) piling in after each smart / whale buy
+  quality_drift_s: 90.0              # e-folding time of the quality tilt in retail flow (how fast information is priced in)
+  frontrun_trade_sol: [0.6, 0.6]
+  viral_prob: 0.03                   # heavy tail: rare tokens that go viral (drives ~1-2 % graduation)
+  viral_boost: 5.0
+
+ml:
+  model: logistic             # logistic | random_forest | xgboost | lightgbm | catboost
+  target: rug                 # rug | fwd_return | migrate
+  fwd_return_horizon_s: 300.0
+  fwd_return_threshold: 0.2
+  cv_folds: 5
+  embargo_s: 1800.0
+  shap_samples: 300
+  permutation_repeats: 5
+  params:
+    logistic: {C: 1.0, max_iter: 2000}
+    random_forest: {n_estimators: 300, max_depth: 6, min_samples_leaf: 20, n_jobs: -1}
+    xgboost: {n_estimators: 300, max_depth: 4, learning_rate: 0.05, subsample: 0.8, colsample_bytree: 0.8}
+    lightgbm: {n_estimators: 300, num_leaves: 15, learning_rate: 0.05, subsample: 0.8, colsample_bytree: 0.8, verbose: -1}
+    catboost: {iterations: 300, depth: 4, learning_rate: 0.05, verbose: 0}

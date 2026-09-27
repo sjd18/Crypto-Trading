@@ -1,0 +1,71 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pumpfun-hft"
+version = "0.1.0"
+description = "Quantitative research, backtesting and execution platform for Pump.fun bonding-curve markets on Solana"
+readme = "README.md"
+requires-python = ">=3.13"
+license = { text = "Proprietary" }
+dependencies = [
+  "numpy>=2.1",
+  "scipy>=1.14",
+  "polars>=1.20",
+  "pyarrow>=18",
+  "duckdb>=1.2",
+  "numba>=0.61",
+  "plotly>=6",
+  "httpx>=0.28",
+  "websockets>=14",
+  "pydantic>=2.9",
+  "pyyaml>=6",
+  "python-dotenv>=1.0",
+  "orjson>=3.10",
+  "rich>=13",
+  "typer>=0.15",
+  "fastapi>=0.115",
+  "uvicorn>=0.32",
+  "matplotlib>=3.9",
+  "reportlab>=4.2",
+  "scikit-learn>=1.6",
+  "joblib>=1.4",
+]
+
+[project.optional-dependencies]
+live = ["solders>=0.23", "pyjwt[crypto]>=2.9"]
+ml = ["xgboost>=2.1", "lightgbm>=4.5", "catboost>=1.2", "shap>=0.46"]
+research = ["nbformat>=5.10", "nbclient>=0.10", "ipykernel>=6.29"]
+dev = ["pytest>=8.3", "pytest-asyncio>=0.24"]
+
+[project.scripts]
+pumpfun-hft = "pumpfun_hft.main:app"
+
+[tool.setuptools.packages.find]
+include = ["pumpfun_hft*"]
+
+[tool.setuptools.package-data]
+pumpfun_hft = ["configs/*.yaml", "core/idl/*.json", "database/*.sql", "notebooks/*.ipynb", "notebooks/*.py"]
+
+[tool.ruff]
+line-length = 140
+extend-exclude = ["*.ipynb"]
+
+[tool.ruff.lint]
+select = ["E9", "F", "B"]
+ignore = ["B008", "B905"]
+
+[tool.pytest.ini_options]
+testpaths = ["pumpfun_hft/tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+markers = [
+  "slow: long-running tests (notebooks, large replays)",
+  "latency: latency budget tests",
+]
+filterwarnings = [
+  "ignore::DeprecationWarning",
+  "ignore::PendingDeprecationWarning",
+  "ignore:Using .httpx. with .starlette.testclient. is deprecated",
+]
