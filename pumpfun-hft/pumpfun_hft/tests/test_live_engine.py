@@ -69,6 +69,8 @@ async def test_paper_trader_on_a_replayed_stream(events, tmp_path) -> None:
     await trader.stop(flatten=True, timeout_s=10.0)
     run.cancel()
     assert not any(p.tokens > 0 for p in trader.portfolio.positions.values())  # flattened before shutdown
+    final = meta.all_state()["live"]["value"]  # the dashboard must not keep showing pre-shutdown positions
+    assert final["stopped"] is True and final["positions"] == []
     eq = trader.portfolio.equity_lamports() / 1e9
     booked = sum(f.sol_delta for f in trader.fills) / 1e9
     assert abs(eq - (10.0 + booked)) < 1e-9  # cash ledger matches every booked fill
