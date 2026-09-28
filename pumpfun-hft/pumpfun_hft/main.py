@@ -520,6 +520,15 @@ def stream(minutes: float = typer.Option(0, help="Stop after N minutes (0 = run 
         task.cancel()
 
     asyncio.run(run())
+    store = _store()
+    reports = store.compact()  # merge the part files and drop re-fetched duplicates
+    dupes = sum(r.duplicates for r in reports)
+    st = collector.status()
+    console.print(f"[green]recorded[/] {st['events']:,} events · {st['reconnects']} reconnects · {st['truncated']} truncated logs · "
+                  f"removed {dupes:,} duplicate rows · store now {store.stats()}")
+    gaps = store.detect_gaps(S().collector.gap_slot_threshold)
+    if gaps.height:
+        console.print(f"[yellow]{gaps.height} slot gaps wider than the threshold — run `verify-data` to inspect them.[/]")
 
 
 def _run_trader(paper: bool, strategies: list[str], minutes: float, flatten_on_exit: bool) -> None:

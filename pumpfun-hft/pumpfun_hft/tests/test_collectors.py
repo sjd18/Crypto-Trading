@@ -160,5 +160,12 @@ async def test_live_collector_records_truncation_and_flushes(settings, tmp_path)
     await col.on_slot({"slot": 10}, 0, 1_000)
     await col.on_slot({"slot": 12}, 0, 1_800)
     assert col.latency.percentile("chain.slot_ms", 50) == pytest.approx(400.0)
-    col.flush()
+    assert st.read().height == 0  # still buffered
+
+    class _Ws:
+        async def stop(self) -> None:
+            return None
+
+    col.ws = _Ws()  # type: ignore[assignment]
+    await col.stop()  # stopping must not lose the events buffered since the last flush
     assert st.read().height == 1

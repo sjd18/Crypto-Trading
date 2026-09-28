@@ -227,6 +227,7 @@ class LiveStreamCollector:
     async def stop(self) -> None:
         self._stop.set()
         await self.ws.stop()
+        self.flush()  # the flush loop has ended: write the events buffered since its last pass
 
     def status(self) -> dict[str, Any]:
         snap = self.latency.snapshot()
