@@ -44,6 +44,10 @@ python -m pumpfun_hft.main dashboard-export       # one self-contained HTML file
 pytest                                            # full test suite (pytest -m "not slow" to skip notebooks)
 ```
 
+On Windows, `hft.ps1` saves retyping all of that: load it once per PowerShell window with
+`. .\hft.ps1` (edit the two paths at the top first), then run `hft synth --hours 24`,
+`hft backtest --strategy smart_money`, and so on. `hft-help` prints a cheat sheet of every command.
+
 Real data instead of the synthetic market:
 
 ```bash
