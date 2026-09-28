@@ -74,10 +74,14 @@ def _evaluate(task: tuple[str, dict[str, Any], int, int, int, int]) -> tuple[flo
 
 
 def _mp_method() -> str:
-    """'spawn' (safe with threads) when the main module is importable, else 'fork' (stdin / REPL)."""
+    """'spawn' (safe with threads) when the main module is importable or 'fork' does not exist (Windows),
+    else 'fork' (code piped through stdin / a REPL, which 'spawn' cannot re-import)."""
+    import multiprocessing
     import os
     import sys
 
+    if "fork" not in multiprocessing.get_all_start_methods():
+        return "spawn"
     main_file = getattr(sys.modules.get("__main__"), "__file__", None)
     if main_file is None or os.path.exists(main_file):
         return "spawn"

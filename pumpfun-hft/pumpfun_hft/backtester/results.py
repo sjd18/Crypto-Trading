@@ -65,7 +65,7 @@ class BacktestResult:
     @classmethod
     def load(cls, directory: str | Path) -> BacktestResult:
         d = Path(directory)
-        meta = json.loads((d / "result.json").read_text())
+        meta = json.loads((d / "result.json").read_text(encoding="utf-8"))  # UTF-8 on every OS
 
         def rd(name: str) -> pl.DataFrame:
             p = d / name
