@@ -112,7 +112,7 @@ class ParquetEventStore:
             files = sorted(ddir.glob("*.parquet"))
             if not files:
                 continue
-            df = pl.concat([normalise_frame(pl.read_parquet(f)) for f in files], how="vertical_relaxed")
+            df = pl.concat([normalise_frame(pl.read_parquet(f, memory_map=False)) for f in files], how="vertical_relaxed")
             rows_in = df.height
             with_sig = df.filter(pl.col("signature").is_not_null()).unique(subset=list(DEDUP_KEYS), keep="first", maintain_order=True)
             no_sig = df.filter(pl.col("signature").is_null()).unique(keep="first", maintain_order=True)
