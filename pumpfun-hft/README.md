@@ -21,7 +21,7 @@ asyncio, Polars / DuckDB / Parquet, Numba, Plotly, FastAPI, Typer.
 | Discovery | `discovery/` | New-token scanner with metadata / socials / sector enrichment, creator scoring (Beta posteriors, Wilson bounds), point-in-time outcome resolution |
 | Features | `features/` | ~55 timestamp-safe features (price, volume, wallet, curve, time); online engine and vectorised batch pipeline with exact parity |
 | Wallets | `analytics/wallet_intel.py` | Round-trip PnL, posterior "smart" score, sniper / whale / bot / market-maker / insider / rug-wallet labels, insider clusters |
-| Strategies | `strategies/` | 10 strategies behind one `generate_signal()` interface (BUY / SELL / HOLD / EXIT / SCALE_IN / SCALE_OUT, confidence 0-100) plus a shared runtime (sizing, cost gate, risk, retries) |
+| Strategies | `strategies/` | 10 hand-built strategies plus `ml_signal` (trades a trained model) behind one `generate_signal()` interface (BUY / SELL / HOLD / EXIT / SCALE_IN / SCALE_OUT, confidence 0-100) plus a shared runtime (sizing, cost gate, risk, retries) |
 | Backtester | `backtester/` | Event / trade / tick / candle replay, market / limit / IOC / FOK orders, persistent own impact, fees, priority fees, Jito tips, rent, lognormal latency, drops, failed transactions, congestion, blockhash expiry, outages, rate limits, partial fills |
 | Risk | `risk/` | Fixed / fixed-risk / Kelly / volatility / confidence / max-exposure sizing, liquidity cap, stop loss, take-profit ladder, trailing stop, breakeven, max hold, pyramiding, loss limits, exposure limits, circuit breakers |
 | Validation | `optimizer/`, `analytics/montecarlo.py` | Grid / random / Bayesian (GP + EI) / genetic search, train-validation-test-live-sim splits with a sealed test set and audit log, walk-forward, deflated Sharpe, PBO (CSCV), trade- and path-level Monte Carlo |
@@ -67,7 +67,7 @@ python -m pumpfun_hft.main verify-data                               # checksums
 | `backtest` | Event-driven backtest; saves the run, the report (HTML / PDF / CSV / JSON) and a Monte Carlo summary |
 | `optimize`, `walkforward` | Parameter search on train, selection on validation, optional sealed final evaluation; walk-forward |
 | `montecarlo`, `report` | Re-run Monte Carlo or regenerate a report for a saved run |
-| `train-model`, `wallets` | Train and evaluate an ML model with purged CV; show top wallets of a run |
+| `train-model`, `wallets` | Train and evaluate an ML model with purged CV (trade a `fwd_up` model with `--strategy ml_signal`, see docs/RESEARCH_WORKFLOW.md); show top wallets of a run |
 | `dashboard`, `dashboard-export` | Local dashboard server; static single-file export |
 | `paper-replay` | Recorded events through the live engine (paper gateway) on virtual time, compared with a backtest of the same events |
 | `paper`, `live` | Paper trading on the live stream; live trading (requires `app.mode: live` **and** `--confirm-live`) |
@@ -137,7 +137,7 @@ pumpfun_hft/
   database/     SQLite state store, DuckDB warehouse, schemas
   discovery/    token scanner, creator scoring, outcome resolution
   features/     market state, online feature engine, batch features, registry
-  strategies/   10 strategies + shared runtime
+  strategies/   10 strategies + ml_signal + shared runtime
   backtester/   replay, execution simulator, engine, results
   risk/         portfolio ledger, sizing, position manager, risk engine, circuit breakers
   optimizer/    search spaces, splits, search methods, studies, overfitting statistics

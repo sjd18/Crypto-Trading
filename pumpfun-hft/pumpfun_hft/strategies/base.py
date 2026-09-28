@@ -156,4 +156,8 @@ def build_strategy(name: str, settings: Any, overrides: dict[str, Any] | None = 
     params = dict(settings.strategy.params.get(name, {}))
     if overrides:
         params.update(overrides)
-    return STRATEGY_REGISTRY[name](params)
+    strat = STRATEGY_REGISTRY[name](params)
+    bind = getattr(strat, "bind_settings", None)
+    if bind is not None:  # strategies that need more than their params (e.g. ml_signal loads its model file)
+        bind(settings)
+    return strat

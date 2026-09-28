@@ -57,7 +57,8 @@ BACKTESTING
 
   Strategies: momentum_ignition  smart_money  sniper  volume_breakout
               mean_reversion     whale_follow  liquidity_sweep
-              bonding_curve_scalp  migration   rug_avoidance (exit overlay)
+              bonding_curve_scalp  migration   ml_signal (trained model)
+              rug_avoidance (exit overlay)
 
 OPTIMISATION AND VALIDATION
   hft optimize --strategy smart_money --method bayesian --trials 32
@@ -68,8 +69,15 @@ OPTIMISATION AND VALIDATION
 
 MACHINE LEARNING
   hft train-model --model lightgbm --target rug               rug-pull probability
-  hft train-model --model xgboost --target fwd_up             forward return
+  hft train-model --model lightgbm --target fwd_up --end 2026-09-20T00:00:00Z
+                                              train on data before --end only
       --model: logistic | random_forest | xgboost | lightgbm | catboost
+  Trade a fwd_up model (loads the newest one; test only after its printed cut-off):
+  hft backtest --strategy ml_signal --start <cut-off>
+  hft paper-replay --strategy ml_signal --start <cut-off>
+  hft paper --strategy ml_signal --minutes 120
+  hft --set strategy.params.ml_signal.min_prob=0.7 backtest --strategy ml_signal --start <cut-off>
+  A rug model instead goes in rug_model.model_path (+ rug_model.use_trained_model: true).
 
 LOOKING AT RESULTS
   hft dashboard                               serve http://127.0.0.1:8050 (Ctrl-C to stop)

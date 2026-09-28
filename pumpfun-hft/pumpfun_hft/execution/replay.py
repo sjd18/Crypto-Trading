@@ -60,6 +60,7 @@ class ReplaySummary:
     latency: dict[str, Any] = field(default_factory=dict)
     trades: pl.DataFrame = field(default_factory=pl.DataFrame)
     fills_frame: pl.DataFrame = field(default_factory=pl.DataFrame)
+    ml_funnel: str = ""  # ml_signal filter counts, when that strategy ran
 
     @property
     def total_return(self) -> float:
@@ -122,6 +123,7 @@ async def _replay(settings: Any, rows: list[tuple[Any, ...]], metadata: dict[str
         meta.set_state("live", snap)
     fills = trader.fills
     pf = trader.portfolio
+    ml = trader.runtime.by_name.get("ml_signal")
     return ReplaySummary(
         events=trader.events_processed, market_span_s=(t1_market - t0_market) / 1000.0, wall_s=time.perf_counter() - wall0,
         fills=sum(1 for f in fills if f.status in (OrderStatus.FILLED, OrderStatus.PARTIAL)),
@@ -129,4 +131,5 @@ async def _replay(settings: Any, rows: list[tuple[Any, ...]], metadata: dict[str
         round_trips=len(pf.trades), realized_pnl_sol=sum(t.pnl_sol for t in pf.trades),
         equity_sol=pf.equity_lamports() / LAMPORTS_PER_SOL, initial_capital_sol=pf.initial / LAMPORTS_PER_SOL,
         open_positions=sum(1 for p in pf.positions.values() if p.tokens > 0), latency=latency.snapshot(),
+        ml_funnel=ml.funnel() if ml is not None and hasattr(ml, "funnel") else "",
         trades=pf.trades_frame(), fills_frame=pl.DataFrame([f.to_dict() for f in fills], infer_schema_length=None) if fills else pl.DataFrame())
