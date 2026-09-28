@@ -107,6 +107,7 @@ class LiveTrader:
         self.fills: list[Fill] = []
         self.events_processed = 0
         self.session = s.app.mode  # shown on the Live monitor: "paper", "live" or "paper-replay"
+        self.stopped = False       # set by stop(); the final snapshot carries it so the dashboard can say so
 
     # ------------------------------------------------------------------ event path
     def on_event(self, ev: Event) -> list[Order]:
@@ -204,6 +205,7 @@ class LiveTrader:
         return {
             "ts_ms": now,
             "session": self.session,
+            "stopped": self.stopped,
             "equity_sol": eq / LAMPORTS_PER_SOL,
             "cash_sol": self.portfolio.cash / LAMPORTS_PER_SOL,
             "positions": [{"mint": p.mint, "strategy": p.strategy, "tokens": p.tokens, "value_sol": p.last_value / LAMPORTS_PER_SOL,
@@ -262,3 +264,11 @@ class LiveTrader:
         for t in self._tasks:
             t.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
+        self.stopped = True
+        if self.meta is not None:  # final snapshot: the Live monitor must not keep showing pre-shutdown positions
+            try:
+                self.meta.set_state("live", self.snapshot())
+            except Exception:  # noqa: BLE001 - shutdown must finish even if the store is unavailable
+                log.exception("final snapshot failed")
+        log.info("live trader stopped", extra={"data": {"flattened": flatten, "fills": len(self.fills),
+                                                        "closed_trades": len(self.portfolio.trades)}})
