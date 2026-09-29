@@ -131,5 +131,5 @@ async def _replay(settings: Any, rows: list[tuple[Any, ...]], metadata: dict[str
         round_trips=len(pf.trades), realized_pnl_sol=sum(t.pnl_sol for t in pf.trades),
         equity_sol=pf.equity_lamports() / LAMPORTS_PER_SOL, initial_capital_sol=pf.initial / LAMPORTS_PER_SOL,
         open_positions=sum(1 for p in pf.positions.values() if p.tokens > 0), latency=latency.snapshot(),
-        ml_funnel=ml.funnel() if ml is not None and hasattr(ml, "funnel") else "",
+        ml_funnel=ml.funnel(getattr(trader.runtime, "signal_records", None)) if ml is not None and hasattr(ml, "funnel") else "",
         trades=pf.trades_frame(), fills_frame=pl.DataFrame([f.to_dict() for f in fills], infer_schema_length=None) if fills else pl.DataFrame())

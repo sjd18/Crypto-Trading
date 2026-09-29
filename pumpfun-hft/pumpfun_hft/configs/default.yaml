@@ -356,13 +356,14 @@ strategy:
   params:
     ml_signal:                      # trade a model from `train-model --target fwd_up` (see strategies/ml_signal.py)
       model_path: latest            # "latest" = newest *-fwd_up-*.joblib in paths.models_dir, or a file path
-      min_prob: 0.6                 # buy when the model's P(up) >= this
-      max_rug_prob: 0.5
+      top_frac: 0.1                 # buy the model's top 10 % of scores (threshold from its out-of-fold scores)
+      min_prob: 0.0                 # > 0: fixed probability threshold instead of top_frac
+      max_rug_prob: 1.0             # 1 = off (the model already sees the rug features); lower adds the rug scorer's veto
       max_progress_pct: 90.0
       hold_s: 0.0                   # 0 = the model's label horizon (ml.fwd_return_horizon_s)
       stop_loss_pct: 0.0            # 0 = position.stop_loss_pct
       take_profit_pct: 0.0          # 0 = the position.take_profit ladder
-      up_return: 0.0                # cost gate: expected = p*up - (1-p)*down; 0 = ml.fwd_return_threshold
+      up_return: 0.0                # cost gate for models without out-of-fold returns: p*up - (1-p)*down; 0 = fwd_return_threshold
       down_return: 0.1
     momentum_ignition:
       min_age_s: 5.0
@@ -487,8 +488,8 @@ optimizer:
   grid: {points_per_dim: 3, max_points: 400}
   spaces:
     ml_signal:
-      min_prob: {type: float, low: 0.5, high: 0.9}
-      max_rug_prob: {type: float, low: 0.2, high: 0.8}
+      top_frac: {type: log_float, low: 0.01, high: 0.4}
+      max_rug_prob: {type: float, low: 0.2, high: 1.0}
     momentum_ignition:
       min_buy_sol: {type: float, low: 1.0, high: 10.0}
       min_imbalance: {type: float, low: 0.1, high: 0.8}

@@ -162,7 +162,8 @@ MACHINE LEARNING  (train and test on the same data set)
   hftr backtest --strategy ml_signal --start <training cut-off printed by train-model>
   hftr paper-replay --strategy ml_signal --start <cut-off>     same test, through the live engine
   hftr paper --strategy ml_signal --minutes 120                live data, simulated fills
-  hftr --set strategy.params.ml_signal.min_prob=0.7 backtest --strategy ml_signal --start <cut-off>
+  hftr --set strategy.params.ml_signal.top_frac=0.02 backtest --strategy ml_signal --start <cut-off>
+      top_frac: share of the highest model scores to buy (train-model prints a table to choose it)
       --model: logistic | random_forest | xgboost | lightgbm | catboost
       --target: fwd_up (-> ml_signal) | migrate (-> ml_signal, set its model_path) | rug (-> rug_model)
   Rug model: hftr train-model --target rug, then in your config set rug_model.use_trained_model: true

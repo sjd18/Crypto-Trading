@@ -229,3 +229,14 @@ def test_verify_data_adopts_files_written_without_this_manifest(tmp_path: Path, 
     assert "checksum mismatches: 0" in out and "manifest" not in out
     (next((root / "events").glob("date=*/*.parquet"))).write_bytes(b"corrupt")
     assert "checksum mismatches: 1" in flat(cli(tmp_path, "real", root, "verify-data", code=1))
+
+
+def test_a_run_without_trades_says_why(synth_root: Path, tmp_path: Path) -> None:
+    res = cli(tmp_path, "synthetic", synth_root, "--set", "sizing.min_confidence=101", "backtest", "--strategy",
+              "momentum_ignition", "--no-report")
+    out = flat(res)
+    assert "No trades" in out and "low_confidence" in out and "sizing.min_confidence" in out
+    cli(tmp_path, "synthetic", synth_root, "report", "--formats", "html")
+    run = max((synth_root / "reports" / "runs").iterdir(), key=lambda d: d.stat().st_mtime)
+    page = (run / "report" / "report.html").read_text(encoding="utf-8")
+    assert "No trades in this run" in page and "low_confidence" in page

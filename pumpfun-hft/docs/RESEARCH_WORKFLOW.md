@@ -127,8 +127,8 @@ python -m pumpfun_hft.main train-model --model lightgbm --target rug
 
 Which slot a model goes in depends on its target; each slot refuses the other kind.
 
-**`fwd_up` (or `migrate`) → the `ml_signal` strategy**, which buys when the model's probability
-is at least `min_prob`:
+**`fwd_up` (or `migrate`) → the `ml_signal` strategy**, which buys the snapshots the model scores
+highest (by default its top 10 %, `top_frac: 0.1`):
 
 ```powershell
 hftr data-info                                                              # prints a ready --end
@@ -146,13 +146,28 @@ hftr paper        --strategy ml_signal --minutes 120                        # li
 * It scores each token once per training snapshot delay (`rug_model.snapshot_delays_s`), the only
   moments the model was trained on, with the same feature code that built the training rows
   (`ml.dataset.model_features`).
+* **Threshold.** A model's probabilities sit near its base rate (if 8 % of snapshots rise +20 % in
+  5 minutes, strong scores are ~0.2-0.5), so a fixed cut-off such as 0.6 usually means no trades.
+  `train-model` stores the model's out-of-fold scores (each from a CV model that never saw that
+  row) and what followed them; `ml_signal` buys a score in the top `top_frac` of those.
+  `min_prob > 0` sets a fixed probability instead. `train-model` prints a table of hit rate and
+  mean return for the top 1 / 2 / 5 / 10 / 20 % - choose `top_frac` from it (training data only).
+* **Confidence** is the score's percentile among the out-of-fold scores (top 10 % -> 90-100), so it
+  clears `sizing.min_confidence` whenever `top_frac <= 1 - min_confidence / 100`.
+* **Cost gate.** The expected return of an entry is the mean return that followed the out-of-fold
+  snapshots above the threshold (winsorised at the 95th percentile). It must beat
+  `strategy.cost_gate_multiple` x the round-trip cost; if it does not, the model has no edge after
+  costs and no trade is made. (Older models without these statistics: `p * up_return -
+  (1 - p) * down_return` and a 0.6 threshold.)
 * Exits: held for at most the label horizon (`ml.fwd_return_horizon_s`), plus the usual stop /
-  take-profit / trailing stop and the rug-avoidance overlay. Entries are also gated by
-  `max_rug_prob`, the overlay's veto and the cost gate
-  (`p * up_return - (1 - p) * down_return` vs `strategy.cost_gate_multiple` x round-trip cost).
-* After a run the CLI prints the funnel — scored, below `min_prob`, rug-blocked, signals,
-  skipped before cut-off — so a run with no trades shows where the candidates went.
-* `optimize --strategy ml_signal` tunes `min_prob` and `max_rug_prob`.
+  take-profit / trailing stop and the rug-avoidance overlay, whose entry veto
+  (`strategy.params.rug_avoidance.veto_entry_rug_prob`) also applies. `max_rug_prob` (default 1 =
+  off, since the model already sees the rug features) adds the rug scorer's veto.
+* Before a run the CLI prints the threshold and its out-of-sample hit rate and return; after it,
+  the funnel (scored, below threshold, rug-blocked, signals, skipped before cut-off) and what
+  happened to the signals (submitted, `cost_gate`, `vetoed`, `low_confidence`, `risk:...`). A run
+  with no trades says so, in the CLI and at the top of the report.
+* `optimize --strategy ml_signal` tunes `top_frac` and `max_rug_prob`.
 
 **`rug` → the rug scorer** used by every strategy's `max_rug_prob` gate and the overlay: set
 `rug_model.use_trained_model: true` and `rug_model.model_path` to the saved file's name (it is

@@ -529,6 +529,8 @@ def _preflight_models(names: list[str]) -> Any:
         raise typer.Exit(1) from exc
     if strat is not None:
         console.print(f"ml_signal model: {escape(strat.path.name)} (cut-off {ms_to_iso(strat.train_end_ms)})")
+        for line in strat.describe():
+            console.print(f"  {'[yellow]' + line + '[/]' if line.startswith('warning') else line}", soft_wrap=True)
     return strat
 
 
@@ -549,7 +551,26 @@ def _ml_cutoff_notice(names: list[str], events: pl.DataFrame) -> None:
 def _ml_funnel(runtime: Any) -> None:
     strat = getattr(runtime, "by_name", {}).get("ml_signal")
     if strat is not None:
-        console.print(f"ml_signal: {strat.funnel()}")
+        console.print(f"ml_signal: {strat.funnel(getattr(runtime, 'signal_records', None))}")
+
+
+def _explain_no_trades(res: Any) -> None:
+    """With no round trips every metric is 0 / NaN: say so, and where the entries went."""
+    if res.trades.height:
+        return
+    console.print("[yellow]No trades, so the metrics above (and the report) are empty: 0 or NaN.[/]")
+    sig = res.signals.filter(pl.col("action") == "BUY") if res.signals.height else res.signals
+    if not sig.height:
+        console.print("[yellow]No strategy produced a buy signal on this data (for ml_signal the funnel above shows why).[/]")
+        return
+    counts = sig.group_by("strategy", "outcome").len().sort("len", descending=True)
+    console.print("[yellow]Buy signals and what happened to them:[/] " + " · ".join(
+        f"{r['strategy']} {r['outcome']} {r['len']:,}" for r in counts.iter_rows(named=True)), soft_wrap=True)
+    hints = {"cost_gate": "expected return below strategy.cost_gate_multiple x round-trip cost",
+             "low_confidence": "confidence below sizing.min_confidence", "vetoed": "vetoed by the exit overlay (rug_avoidance)"}
+    for k in counts["outcome"].unique().to_list():
+        if k in hints:
+            console.print(f"  {k}: {hints[k]}")
 
 
 def _run_backtest(strategies: list[str], start: str | None, end: str | None, seed: int | None, run_id: str | None = None) -> Any:
@@ -622,6 +643,7 @@ def backtest(strategy: list[str] = typer.Option(None, "--strategy", help="Strate
     d = _save_run(eng, res)
     _print_metrics(res.metrics, f"{res.run_id} ({', '.join(res.strategies)})")
     _ml_funnel(eng.runtime)
+    _explain_no_trades(res)
     console.print(f"{res.n_events:,} events in {res.elapsed_s:.1f}s ({res.events_per_second:,.0f}/s) · saved to {d}")
     if res.synthetic:
         console.print("[yellow]Synthetic data: these numbers exercise the pipeline and say nothing about live profitability.[/]")
@@ -768,6 +790,27 @@ def train_model(model: str = typer.Option(None, help="logistic | random_forest |
         else:
             console.print(f"use it: {_cli()} backtest --strategy ml_signal --start {cut}", soft_wrap=True)
             console.print("(ml_signal loads the newest fwd_up model of this data set)")
+            from pumpfun_hft.strategies.ml_signal import MlSignal
+
+            preview = MlSignal(dict(s.strategy.params.get("ml_signal", {})))
+            preview.path = path
+            preview.load_bundle(rep.bundle, s)
+            for line in preview.describe():
+                console.print(f"  ml_signal {'[yellow]' + line + '[/]' if line.startswith('warning') else line}", soft_wrap=True)
+            table = MlSignal.threshold_table(rep.bundle)
+            if table and tgt == "fwd_up":
+                t = Table(title=f"Out-of-sample: what followed the top-scored snapshots ({s.ml.fwd_return_horizon_s / 60:g} min)")
+                for c in ("top_frac", "score >=", "snapshots", "hit rate", "mean return"):
+                    t.add_column(c, justify="right")
+                for r in table:
+                    t.add_row(f"{r['top_frac']:.0%}", f"{r['threshold']:.3f}", f"{int(r['n']):,}",
+                              "–" if r["hit_rate"] != r["hit_rate"] else f"{r['hit_rate']:.1%}",
+                              "–" if r["mean_return"] != r["mean_return"] else f"{r['mean_return']:+.1%}")
+                console.print(t)
+                console.print(f"[dim]ml_signal buys the top {preview.p.top_frac:.0%} "
+                              "(strategy.params.ml_signal.top_frac). An entry also needs its mean return to beat "
+                              f"{s.strategy.cost_gate_multiple:g} x the round-trip cost (fees, slippage, impact), or the "
+                              "cost gate skips it. Choosing top_frac from this table uses training data only.[/]")
             store_end = _store().scan(columns=["ts_ms"]).select(pl.col("ts_ms").max()).collect().item() if end \
                 else int(events["ts_ms"].max())
             t0 = int(events["ts_ms"].min())

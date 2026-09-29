@@ -163,12 +163,16 @@ def train_and_evaluate(df: pl.DataFrame, features: list[str], target: str, cfg: 
     cv = PurgedForwardSplit(cfg.cv_folds, int(cfg.embargo_s * 1000))
     folds: list[dict[str, float]] = []
     last: tuple[Any, np.ndarray, np.ndarray] | None = None
+    oof_idx: list[np.ndarray] = []
+    oof_p: list[np.ndarray] = []
     for i, (tr, te) in enumerate(cv.split(times, ends, groups)):
         if len(np.unique(y[tr])) < 2:
             continue
         m = make_model(cfg.model, params, seed)
         m.fit(x[tr], y[tr])
         p = m.predict_proba(x[te])[:, 1]
+        oof_idx.append(np.asarray(te))
+        oof_p.append(p)
         fm = _fold_metrics(y[te], p)
         fm.update(fold=float(i), n_train=float(len(tr)), train_end_ms=float(ends[tr].max()), test_start_ms=float(times[te].min()))
         folds.append(fm)
@@ -188,6 +192,7 @@ def train_and_evaluate(df: pl.DataFrame, features: list[str], target: str, cfg: 
         "shap": [imp_shap.get(f, float("nan")) for f in features],
     }).sort("native", descending=True, nulls_last=True)
     keys = ["auc", "log_loss", "brier", "precision_top_decile", "base_rate"]
+
     def _mean(k: str) -> float:
         v = np.array([f[k] for f in folds], dtype=float)
         v = v[np.isfinite(v)]
@@ -197,4 +202,12 @@ def train_and_evaluate(df: pl.DataFrame, features: list[str], target: str, cfg: 
     train_end = int(ends.max())
     bundle = {"model": final, "features": features, "train_end_ms": train_end, "kind": cfg.model, "target": target,
               "cv_mean": mean}
+    if oof_idx:
+        # out-of-fold scores (each from a model that never saw that row) with what then happened: lets ml_signal
+        # pick its threshold from the score distribution and estimate the return above it honestly
+        idx = np.concatenate(oof_idx)
+        bundle["oof_probs"] = np.concatenate(oof_p).astype(np.float32)
+        bundle["oof_target"] = y[idx].astype(np.int8)
+        if "fwd_return" in data.columns:
+            bundle["oof_fwd_return"] = np.expm1(data["fwd_return"].to_numpy()[idx]).astype(np.float32)  # simple return
     return MlReport(cfg.model, target, features, folds, mean, importance, train_end, len(y), float(y.mean()) if len(y) else math.nan, bundle)

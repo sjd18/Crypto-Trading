@@ -243,6 +243,15 @@ class ReportGenerator:
             banner = ('<div class="banner"><b>Synthetic data.</b> These results come from the built-in synthetic market '
                       'generator, which plants known structure (informed wallets, serial ruggers) to exercise the pipeline. '
                       'They say nothing about live profitability.</div>')
+        if not r.trades.height:
+            outcomes = ""
+            sig = r.signals
+            if sig.height and {"action", "outcome", "strategy"} <= set(sig.columns):
+                c = sig.filter(pl.col("action") == "BUY").group_by("strategy", "outcome").len().sort("len", descending=True)
+                outcomes = " Buy signals and what happened to them: " + html.escape(", ".join(
+                    f"{x['strategy']} {x['outcome']} {x['len']:,}" for x in c.iter_rows(named=True))) + "." if c.height else ""
+            banner += ('<div class="banner"><b>No trades in this run</b>, so the metrics and charts below are empty (0 or '
+                       f'NaN).{outcomes or " No strategy produced a buy signal."} See signals.parquet in the run folder.</div>')
         if m.get("cagr_extrapolated"):
             banner += ('<div class="banner">The backtest spans less than 30 days: CAGR and Calmar are not reported, and the '
                        'annualised Sharpe and Sortino are scaled up from a short sample, so read them as relative scores only.</div>')

@@ -94,8 +94,12 @@ def test_models_cannot_go_in_the_wrong_slot(settings: Any, fwd_model: Path, tmp_
         _strategy(settings, tmp_path / "stale.joblib")
 
 
-def test_ml_signal_trades_only_after_the_cutoff(settings: Any, events: pl.DataFrame, metadata: dict[str, Any], fwd_model: Path) -> None:
-    strat = _strategy(settings, fwd_model, min_prob=0.0, max_rug_prob=1.0)
+def test_ml_signal_trades_only_after_the_cutoff(settings: Any, events: pl.DataFrame, metadata: dict[str, Any], fwd_model: Path,
+                                               tmp_path: Path) -> None:
+    b = joblib.load(fwd_model)
+    b["oof_fwd_return"] = np.full(len(b["oof_probs"]), 0.5, dtype=np.float32)  # an edge that clears the cost gate
+    joblib.dump(b, tmp_path / "edge.joblib")
+    strat = _strategy(settings, tmp_path / "edge.joblib", min_prob=1e-9, max_rug_prob=1.0)  # buy every scored snapshot
     cut = strat.train_end_ms
     assert int(events["ts_ms"].min()) < cut < int(events["ts_ms"].max())
     res = BacktestEngine(settings, DataSource(frame=events), [strat], metadata=metadata, seed=1).run()
@@ -107,7 +111,7 @@ def test_ml_signal_trades_only_after_the_cutoff(settings: Any, events: pl.DataFr
 
 def test_live_rows_match_the_training_columns(settings: Any, events: pl.DataFrame, metadata: dict[str, Any], fwd_model: Path) -> None:
     """Every row scored in a backtest has the model's columns, in order, and real (non-default) values."""
-    strat = _strategy(settings, fwd_model, min_prob=2.0)  # never buys: only scoring
+    strat = _strategy(settings, fwd_model, min_prob=0.99)  # the recording model says 0.5: never buys, only scores
     rec = RecordingModel(len(strat.features), 0.5)
     strat.model = rec
     BacktestEngine(settings, DataSource(frame=events), [strat], metadata=metadata, seed=1).run()
@@ -137,3 +141,46 @@ def test_trained_rug_model_receives_the_full_training_row(settings: Any, events:
     for f in ("rug_sell_pressure", "rug_missing_socials", "creator_score"):
         if f in idx:
             assert filled[idx[f]], f  # previously these were never passed and silently read as 0
+
+
+def test_threshold_comes_from_the_out_of_fold_scores(settings: Any, fwd_model: Path) -> None:
+    """A model's probabilities sit near its base rate: the default threshold is its own top 10 %, not a fixed 0.6."""
+    bundle = joblib.load(fwd_model)
+    oof = np.asarray(bundle["oof_probs"], dtype=float)
+    assert len(oof) == len(bundle["oof_target"]) == len(bundle["oof_fwd_return"]) > 20
+    strat = _strategy(settings, fwd_model)
+    assert strat.min_score == pytest.approx(float(np.quantile(oof, 0.9)))
+    assert 88.0 <= strat.confidence(strat.min_score) <= 100.0  # confidence = percentile: the top 10 % clears min_confidence
+    assert strat.confidence(float(oof.min()) - 1.0) == 0.0
+    assert strat.oof_n >= 0.09 * len(oof) and strat.expected_return is not None
+    assert any("top 10%" in line for line in strat.describe())
+    assert _strategy(settings, fwd_model, top_frac=0.02).min_score >= strat.min_score
+    assert _strategy(settings, fwd_model, min_prob=0.7).min_score == 0.7
+    table = MlSignal.threshold_table(bundle)
+    assert [r["top_frac"] for r in table] == [0.01, 0.02, 0.05, 0.1, 0.2]
+    assert all(a["threshold"] >= b["threshold"] for a, b in zip(table, table[1:], strict=False))
+    for bad in ({"top_frac": 0.0}, {"top_frac": 1.5}, {"min_prob": 1.0}):
+        with pytest.raises(ValueError):
+            _strategy(settings, fwd_model, **bad)
+
+
+def test_models_without_out_of_fold_scores_fall_back(settings: Any, fwd_model: Path, tmp_path: Path) -> None:
+    old = {k: v for k, v in joblib.load(fwd_model).items() if not k.startswith("oof_")}
+    joblib.dump(old, tmp_path / "old.joblib")
+    strat = _strategy(settings, tmp_path / "old.joblib")
+    assert strat.min_score == 0.6 and strat.expected_return is None and strat.confidence(0.7) == pytest.approx(70.0)
+    assert "retrain" in strat.describe()[0]
+
+
+def test_negative_edge_is_reported_and_gated(settings: Any, fwd_model: Path, tmp_path: Path, events: pl.DataFrame,
+                                             metadata: dict[str, Any]) -> None:
+    b = joblib.load(fwd_model)
+    b["oof_fwd_return"] = np.full(len(b["oof_probs"]), -0.05, dtype=np.float32)  # everything above the threshold lost money
+    joblib.dump(b, tmp_path / "loser.joblib")
+    strat = _strategy(settings, tmp_path / "loser.joblib", top_frac=1.0, max_rug_prob=1.0)
+    assert strat.expected_return == pytest.approx(-0.05) and any("lost money" in x for x in strat.describe())
+    eng = BacktestEngine(settings, DataSource(frame=events), [strat], metadata=metadata, seed=1)
+    res = eng.run()
+    assert res.trades.filter(pl.col("strategy") == "ml_signal").height == 0 if "strategy" in res.trades.columns else res.trades.height == 0
+    funnel = strat.funnel(eng.runtime.signal_records)
+    assert "signals ->" in funnel and "cost_gate" in funnel
