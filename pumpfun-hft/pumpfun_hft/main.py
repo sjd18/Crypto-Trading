@@ -410,6 +410,14 @@ def data_info(train_frac: float = typer.Option(0.6, help="Share of the events to
     runs_dir = p.resolve("reports_dir") / "runs"
     n_runs = sum(1 for d in runs_dir.iterdir() if d.is_dir()) if runs_dir.is_dir() else 0
     rows.append(("backtests", f"{n_runs} saved in {escape(str(runs_dir))}"))
+    if info.events:
+        from pumpfun_hft.collectors.datasets import price_quality
+
+        q = price_quality(p.events_dir)
+        bad = q["trades_without_price"]
+        rows.append(("trades", f"{q['trades']:,}" + (f" · [yellow]{bad:,} ({bad / max(q['trades'], 1):.1%}) without a valid "
+                                                      "price (missing or zero reserves)[/]" if bad else " · all with a valid price")
+                     + (f" · {q['amm_without_mint']:,} pool trades of unknown tokens" if q["amm_without_mint"] else "")))
     for label, value in rows:  # plain lines, never truncated: the paths are what people copy
         console.print(f"[bold]{label:<11}[/]{value}", soft_wrap=True)
     if active and info.events and info.contents not in (active, "mixed"):
@@ -767,6 +775,10 @@ def train_model(model: str = typer.Option(None, help="logistic | random_forest |
     if dropped:
         console.print(f"left out {dropped:,} of {ds.height:,} snapshots whose label window the data does not fully cover "
                       "(end of the data, or a recording gap)")
+    no_label = int(ds.filter(pl.col(flag))[tgt].is_null().sum()) if tgt in ds.columns else 0
+    if no_label:
+        console.print(f"[yellow]left out {no_label:,} snapshots without a valid price at the snapshot (missing or zero "
+                      f"reserves in the events); `{_cli()} data-info` shows how many events lack a price.[/]")
     console.print(f"{rep.kind} → {tgt}: rows {rep.n_rows:,}, base rate {rep.base_rate:.3f}, CV mean {json.dumps(rep.mean)}")
     console.print(rep.importance.head(15))
     if save:

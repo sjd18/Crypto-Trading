@@ -140,6 +140,19 @@ def describe(events_dir: str | Path, metadata_subdir: str = "metadata", count_sy
     return info
 
 
+def price_quality(events_dir: str | Path) -> dict[str, int]:
+    """Trade events, how many of them carry no usable price (null / zero reserves), and pool trades whose token is unknown."""
+    lf = ParquetEventStore(Path(events_dir)).scan(columns=["kind", "mint", "v_sol", "v_tok"])
+    px = pl.col("v_sol").cast(pl.Float64) / pl.col("v_tok").cast(pl.Float64)
+    trade = pl.col("kind").is_in(["trade", "amm_buy", "amm_sell"])
+    row = lf.select(
+        trade.sum().alias("trades"),
+        (trade & ~(px.is_not_null() & px.is_finite() & (px > 0))).sum().alias("trades_without_price"),
+        (pl.col("kind").is_in(["amm_buy", "amm_sell"]) & pl.col("mint").is_null()).sum().alias("amm_without_mint"),
+    ).collect().row(0, named=True)
+    return {k: int(v or 0) for k, v in row.items()}
+
+
 def real_event_count(root: str | Path, events_subdir: str = "events", metadata_subdir: str = "metadata") -> int:
     """Events in the folder that do not belong to a synthetic token (what ``synth --clear`` would destroy)."""
     ev = Path(root) / events_subdir

@@ -240,3 +240,25 @@ def test_a_run_without_trades_says_why(synth_root: Path, tmp_path: Path) -> None
     run = max((synth_root / "reports" / "runs").iterdir(), key=lambda d: d.stat().st_mtime)
     page = (run / "report" / "report.html").read_text(encoding="utf-8")
     assert "No trades in this run" in page and "low_confidence" in page
+
+
+def test_events_without_a_price_never_become_labels(settings: Any, events: pl.DataFrame, metadata: dict[str, Any],
+                                                    tmp_path: Path) -> None:
+    """Trades with zero reserves give a NaN / inf price; polars orders NaN above every number, so before the fix
+    such a snapshot was labelled fwd_up = 1 and a model learned the artifact (100 % 'hit rate' at score 0.999)."""
+    mints = events.filter(pl.col("kind") == "create")["mint"].head(40).to_list()
+    broken = events.with_columns(
+        [pl.when(pl.col("mint").is_in(mints) & (pl.col("kind") == "trade")).then(0).otherwise(pl.col(c)).alias(c)
+         for c in ("v_sol", "v_tok")])
+    ds = build_snapshot_dataset(settings, broken, metadata)
+    bad = ds.filter(pl.col("mint").is_in(mints))
+    assert bad.height and bad["fwd_up"].is_null().all() and bad["fwd_return"].is_null().all()
+    good = ds.filter(~pl.col("mint").is_in(mints) & pl.col("fwd_up").is_not_null())
+    assert good["fwd_return"].is_finite().all()
+    assert ds.filter(pl.col("fwd_up").is_not_null())["fwd_return"].is_finite().all()
+    as_recorded(broken, tmp_path / "rec")
+    from pumpfun_hft.collectors.datasets import price_quality
+
+    q = price_quality(tmp_path / "rec" / "events")
+    assert q["trades_without_price"] == broken.filter(pl.col("mint").is_in(mints) & (pl.col("kind") == "trade")).height
+    assert "without a valid price" in flat(cli(tmp_path, "real", tmp_path / "rec", "data-info"))
