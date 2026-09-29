@@ -149,9 +149,12 @@ def attach_labels(snaps: pl.DataFrame, events: pl.DataFrame, settings: Any, max_
         pl.Series("label_complete", window_complete(t0, snaps["label_end_ms"].to_numpy().astype(np.int64), ts, gap_ms)),
         pl.Series("fwd_complete", window_complete(t0, t0 + fwd_ms, ts, gap_ms)),
     )
+    # only trades with a real price count: an event without reserves (null / zero) gives NaN or inf, and polars
+    # orders NaN above every number, so a NaN return would read as "went up" (fwd_up = 1)
     tr = (events.filter(pl.col("kind").is_in(_TRADES))
           .select("mint", "ts_ms", (pl.col("v_sol").cast(pl.Float64) / pl.col("v_tok").cast(pl.Float64) / 1000.0).alias("px"),
-                  (pl.col("r_sol").cast(pl.Float64) / 1e9).alias("liq")))
+                  (pl.col("r_sol").cast(pl.Float64) / 1e9).alias("liq"))
+          .filter(pl.col("px").is_not_null() & pl.col("px").is_finite() & (pl.col("px") > 0)))
     mig = events.filter(pl.col("kind") == EventKind.MIGRATE.value).group_by("mint").agg(pl.col("ts_ms").min().alias("mig_ms"))
     j = snaps.select("mint", "snapshot_ms", "label_end_ms", "snap_price").join(tr, on="mint", how="left")
     fut = j.filter((pl.col("ts_ms") > pl.col("snapshot_ms")) & (pl.col("ts_ms") <= pl.col("label_end_ms")))
@@ -161,16 +164,26 @@ def attach_labels(snaps: pl.DataFrame, events: pl.DataFrame, settings: Any, max_
     out = (snaps.join(agg, on=["mint", "snapshot_ms"], how="left").join(fwd, on=["mint", "snapshot_ms"], how="left")
            .join(mig, on="mint", how="left"))
     thr = settings.ml.fwd_return_threshold
+    snap_ok = pl.col("snap_price").is_not_null() & pl.col("snap_price").is_finite() & (pl.col("snap_price") > 0)
+    liq_ok = pl.col("snap_liq").is_not_null() & pl.col("snap_liq").is_finite()
     return out.with_columns(
         pl.col("min_px").fill_null(pl.col("snap_price")),
         pl.col("min_liq").fill_null(pl.col("snap_liq")),
-        pl.col("fwd_px").fill_null(pl.col("snap_price")),
+        pl.col("fwd_px").fill_null(pl.col("snap_price")),  # no trade in the window: the price did not move
+        snap_ok.alias("price_ok"),
     ).with_columns(
-        ((pl.col("snap_liq") > 0) & (pl.col("min_liq") <= pl.col("snap_liq") * (1.0 - dd))).cast(pl.Int8).alias("rug"),
-        (pl.col("fwd_px") / pl.col("snap_price")).log().alias("fwd_return"),
+        # no valid price or liquidity at the snapshot: no label (the row is left out of training)
+        pl.when(liq_ok).then(((pl.col("snap_liq") > 0) & (pl.col("min_liq") <= pl.col("snap_liq") * (1.0 - dd))).cast(pl.Int8))
+        .otherwise(None).alias("rug"),
+        pl.when(snap_ok).then((pl.col("fwd_px") / pl.col("snap_price")).log()).otherwise(None).alias("fwd_return"),
         ((pl.col("mig_ms").is_not_null()) & (pl.col("mig_ms") > pl.col("snapshot_ms"))
          & (pl.col("mig_ms") <= pl.col("label_end_ms"))).cast(pl.Int8).alias("migrate"),
-    ).with_columns((pl.col("fwd_return") >= math.log1p(thr)).cast(pl.Int8).alias("fwd_up"))
+    ).with_columns(
+        pl.when(pl.col("fwd_return").is_finite()).then(pl.col("fwd_return")).otherwise(None).alias("fwd_return"),
+    ).with_columns(
+        pl.when(pl.col("fwd_return").is_not_null()).then((pl.col("fwd_return") >= math.log1p(thr)).cast(pl.Int8))
+        .otherwise(None).alias("fwd_up"),
+    )
 
 
 def feature_columns(df: pl.DataFrame, include_rug: bool = True) -> list[str]:

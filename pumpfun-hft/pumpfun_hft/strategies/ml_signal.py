@@ -300,6 +300,9 @@ class MlSignal(Strategy):
                 log.warning("ml_signal: events before the model's training cut-off are not traded",
                             extra={"data": {"train_end_ms": self.train_end_ms}})
             return hold("before model training cut-off")
+        if not (ctx.token.price > 0 and math.isfinite(ctx.token.price)):  # the training rows never had this
+            self.stats["no_price"] += 1
+            return hold()
         if ctx.f.progress_pct > p.max_progress_pct:
             self.stats["progress_too_high"] += 1
             return hold()
