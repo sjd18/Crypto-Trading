@@ -24,6 +24,11 @@ paths:                        # relative paths are anchored at the project root
   models_dir: data/models
   idl_dir: pumpfun_hft/core/idl
 
+datasets:                     # `--dataset synthetic` (hft) / `--dataset real` (hftr): one folder per data set
+  active: ""                  # set by --dataset; "" = use `paths` above exactly as written
+  synthetic: data             # each folder holds events/, metadata/, meta.sqlite, warehouse.duckdb,
+  real: data_real             #   models/ and reports/ of that data set; `--data-root` overrides the folder
+
 # ----------------------------------------------------------------------------- network
 network:
   user_agent: pumpfun-hft/0.1
@@ -323,7 +328,7 @@ wallet_intel:
 
 rug_model:
   use_trained_model: false
-  model_path: data/models/rug_model.joblib
+  model_path: rug_model.joblib    # file in the data set's models folder (paths.models_dir), or an absolute path
   label_horizon_s: 1800.0
   label_drawdown_pct: 80.0        # ML label: liquidity falls >= this % below the snapshot within the horizon
   snapshot_delays_s: [10.0, 30.0, 60.0, 120.0]
@@ -621,6 +626,7 @@ ml:
   target: rug                 # rug | fwd_return | migrate
   fwd_return_horizon_s: 300.0
   fwd_return_threshold: 0.2
+  label_max_data_gap_s: 60.0  # real data: a market-wide silence longer than this is a recording gap; labels spanning it are dropped
   cv_folds: 5
   embargo_s: 1800.0
   shap_samples: 300

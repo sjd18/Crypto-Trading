@@ -96,13 +96,39 @@ class TrainedRugModel:
         return float(self.model.predict_proba(row)[0, 1])
 
 
-def build_rug_scorer(cfg: Any) -> HeuristicRugScorer | TrainedRugModel:
-    """Trained model when configured and present, heuristic otherwise."""
-    if cfg.use_trained_model:
-        from pumpfun_hft.core.config import PROJECT_ROOT
+def resolve_rug_model_path(model_path: str, models_dir: Path | None = None) -> Path:
+    """``rug_model.model_path``: absolute, or relative to the data set's models folder (``models_dir``;
+    a bare file name such as ``lightgbm-rug-1759000000.joblib`` is enough), or - without a models
+    folder - to the project root."""
+    from pumpfun_hft.core.config import PROJECT_ROOT
 
-        p = Path(cfg.model_path)
-        p = p if p.is_absolute() else PROJECT_ROOT / p
-        if p.exists():
-            return TrainedRugModel.load(p)
-    return HeuristicRugScorer(cfg.heuristic_weights)
+    p = Path(model_path)
+    if p.is_absolute():
+        candidates = [p]
+    elif models_dir is not None:
+        candidates = [Path(models_dir) / p, Path(models_dir) / p.name]
+    else:
+        candidates = [PROJECT_ROOT / p]
+    for c in candidates:
+        if c.exists():
+            return c
+    raise FileNotFoundError(f"rug_model.use_trained_model is true but the model file was not found (looked for "
+                            f"{', '.join(str(c) for c in candidates)}); train one with `train-model --target rug` and set "
+                            "rug_model.model_path to its file name, or set use_trained_model: false")
+
+
+def build_rug_scorer(cfg: Any, models_dir: Path | None = None, dataset: str = "") -> HeuristicRugScorer | TrainedRugModel:
+    """Trained model when ``cfg.use_trained_model`` (a missing file is an error, never a silent fallback), heuristic otherwise.
+
+    ``dataset`` is the active data set: a model trained on the other one is refused."""
+    if not cfg.use_trained_model:
+        return HeuristicRugScorer(cfg.heuristic_weights)
+    import joblib
+
+    path = resolve_rug_model_path(cfg.model_path, models_dir)
+    bundle = joblib.load(path)
+    trained_on = bundle.get("dataset")
+    if dataset and trained_on and trained_on != dataset:
+        raise ValueError(f"rug model {path.name} was trained on the {trained_on} data set; this run uses the {dataset} "
+                         "data set. Train one on this data set with `train-model --target rug`.")
+    return TrainedRugModel(bundle)

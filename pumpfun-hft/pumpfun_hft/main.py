@@ -2,6 +2,7 @@
 
 Usage: ``python -m pumpfun_hft.main [--config my.yaml] [--set key=value ...] COMMAND [options]``
 
+Data sets:  --dataset synthetic | real (hft.ps1: hft / hftr) · data-info · find-data · import-data
 Research:   synth · collect-history · verify-data · backtest · optimize · walkforward · montecarlo ·
             report · train-model · wallets · query
 Live:       stream · paper · paper-replay · live (requires app.mode=live AND --confirm-live) · latency-probe
@@ -12,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import shutil
 import time
 from pathlib import Path
@@ -21,9 +23,10 @@ import polars as pl
 import typer
 import yaml
 from rich.console import Console
+from rich.markup import escape
 from rich.table import Table
 
-from pumpfun_hft.core.config import PROJECT_ROOT, Secrets, Settings, load_settings
+from pumpfun_hft.core.config import DATASET_KINDS, PROJECT_ROOT, Secrets, Settings, dataset_path_overrides, load_settings
 from pumpfun_hft.utils import jsonutil
 from pumpfun_hft.utils.logging import get_logger, setup_logging
 from pumpfun_hft.utils.timeutil import ms_to_iso, parse_iso_ms
@@ -44,18 +47,95 @@ def _parse_sets(sets: list[str]) -> dict[str, Any]:
     return out
 
 
+#: commands that do not read or write a data set (no data-set check, no banner)
+NO_DATASET_COMMANDS = frozenset({"check-config", "docs", "update-idl", "latency-probe", "find-data", "data-info", "import-data"})
+
+
 @app.callback()
-def main(config: Path = typer.Option(None, "--config", "-c", help="User YAML merged over configs/default.yaml"),
-         set_: list[str] = typer.Option(None, "--set", "-s", help="Dotted override, e.g. backtest.initial_capital_sol=5")) -> None:
+def main(ctx: typer.Context,
+         config: Path = typer.Option(None, "--config", "-c", help="User YAML merged over configs/default.yaml"),
+         set_: list[str] = typer.Option(None, "--set", "-s", help="Dotted override, e.g. backtest.initial_capital_sol=5"),
+         dataset: str = typer.Option(None, "--dataset", "-d",
+                                     help="synthetic | real: run on that data set, whose folder holds its events, models and "
+                                          "reports (hft.ps1: hft = synthetic, hftr = real)"),
+         data_root: Path = typer.Option(None, "--data-root", help="Folder of the --dataset (default: datasets.<name> in the config)")) -> None:
     overrides = _parse_sets(set_)
+    name = dataset or load_settings(config, overrides).datasets.active  # a config file may also set datasets.active
+    if name and name not in DATASET_KINDS:
+        raise typer.BadParameter(f"--dataset must be one of {', '.join(DATASET_KINDS)}, got {name!r}")
+    if data_root is not None and not name:
+        raise typer.BadParameter("--data-root needs --dataset synthetic|real")
+    if name:
+        root = data_root.expanduser().resolve() if data_root is not None else load_settings(config, overrides).datasets.root(name)
+        # every path of the data set lives in its folder; explicit --set values still win
+        overrides = {**dataset_path_overrides(root), **overrides, "datasets.active": name}
     settings = load_settings(config, overrides)
     STATE.update(settings=settings, config_path=config, overrides=overrides)
     lg = settings.logging
     setup_logging(lg.level, settings.paths.resolve("logs_dir"), lg.max_bytes, lg.backup_count, lg.console, lg.channels)
+    if name and ctx.invoked_subcommand not in NO_DATASET_COMMANDS:
+        _check_dataset()
 
 
 def S() -> Settings:
     return STATE["settings"]
+
+
+def _cli(kind: str | None = None) -> str:
+    """How the user runs commands on a data set (the hft.ps1 function names)."""
+    kind = kind if kind is not None else S().datasets.active
+    return {"synthetic": "hft", "real": "hftr"}.get(kind, "python -m pumpfun_hft.main")
+
+
+def _data_root() -> Path:
+    return S().paths.resolve("data_dir")
+
+
+def _kind_on_disk() -> str:
+    from pumpfun_hft.collectors.datasets import detect_kind
+
+    p = S().paths
+    return detect_kind(_data_root(), p.events_subdir, p.metadata_subdir)
+
+
+def _check_dataset() -> None:
+    """The folder of ``--dataset NAME`` must hold that kind of data (or nothing yet); marks it on first use."""
+    from pumpfun_hft.collectors.datasets import read_marker, write_marker
+
+    name, root = S().datasets.active, _data_root()
+    on_disk = _kind_on_disk()
+    console.print(f"[dim]data set: {name} · {escape(str(root))}[/]")
+    if on_disk == "empty":
+        return
+    if on_disk != name:
+        console.print(f"[red]{escape(str(root))} holds {on_disk} data, but `{_cli(name)}` runs on the {name} data set. "
+                      "Stopped so the two never mix.[/]")
+        if name == "real":
+            console.print("Point HFT_REAL_DIR in hft.ps1 (or --data-root) at the folder with your recorded events; "
+                          "`hftr find-data` lists every event store on this computer. If that folder also contains a "
+                          "synthetic market, copy just the recorded events into an empty real folder with "
+                          f"`hftr import-data --from {escape(str(root))}`.")
+        else:
+            console.print("Point HFT_SYNTH_DIR in hft.ps1 (or --data-root) at a different folder for the synthetic market.")
+        raise typer.Exit(2)
+    if read_marker(root) is None:
+        write_marker(root, name)
+
+
+def _require_real_store(command: str) -> None:
+    """Commands that record live Pump.fun events must write into the real data set, never the synthetic one."""
+    from pumpfun_hft.collectors.datasets import write_marker
+
+    if S().datasets.active == "synthetic":
+        console.print(f"[red]`{command}` records real Pump.fun events, so it runs on the real data set: use "
+                      f"`hftr {command} ...` (not `hft`).[/]")
+        raise typer.Exit(2)
+    if _kind_on_disk() == "synthetic":
+        console.print(f"[red]{escape(str(_data_root()))} holds a synthetic market; recording real events into it would mix the two. "
+                      f"Use `hftr {command} ...` (or --dataset real).[/]")
+        raise typer.Exit(2)
+    if S().datasets.active == "real":
+        write_marker(_data_root(), "real")
 
 
 def _meta() -> Any:
@@ -78,7 +158,19 @@ def _load_events(start: str | None, end: str | None) -> pl.DataFrame:
     store = _store()
     df = store.read(parse_iso_ms(start) if start else None, parse_iso_ms(end) if end else None)
     if df.is_empty():
-        console.print("[yellow]The event store is empty. Generate data with `synth` or collect with `collect-history`.[/]")
+        where = escape(str(S().paths.events_dir))
+        if (start or end) and not store.scan(columns=["ts_ms"]).head(1).collect().is_empty():
+            console.print(f"[yellow]No events between --start {start or '(beginning)'} and --end {end or '(end)'} in {where}. "
+                          f"`{_cli()} data-info` shows the time range of the data.[/]")
+        elif S().datasets.active == "real":
+            console.print(f"[yellow]The event store is empty: no recorded events in {where}. If you recorded them into another "
+                          "folder, `hftr find-data` lists every event store on this computer; then either point HFT_REAL_DIR "
+                          "in hft.ps1 at it or copy them here with `hftr import-data --from <folder>`. New data: "
+                          "`hftr stream --minutes 60`.[/]")
+        elif S().datasets.active == "synthetic":
+            console.print(f"[yellow]The event store is empty ({where}). Generate a synthetic market with `hft synth --hours 24`.[/]")
+        else:
+            console.print("[yellow]The event store is empty. Generate data with `synth` or collect with `collect-history`.[/]")
         raise typer.Exit(1)
     return df
 
@@ -171,9 +263,23 @@ def synth(hours: float = typer.Option(None, help="Override synthetic.duration_ho
         ov["synthetic.duration_hours"] = hours
     if seed is not None:
         ov["synthetic.seed"] = seed
+    from pumpfun_hft.collectors.datasets import real_event_count, write_marker
+
+    if S().datasets.active == "real":
+        console.print("[red]`synth` writes a fake market, so it runs on the synthetic data set: use `hft synth ...` (not `hftr`).[/]")
+        raise typer.Exit(2)
     s = load_settings(STATE.get("config_path"), {**_settings_overrides(), **ov}) if ov else S()
+    n_real = real_event_count(s.paths.resolve("data_dir"), s.paths.events_subdir, s.paths.metadata_subdir)
+    if n_real:
+        console.print(f"[red]{escape(str(s.paths.events_dir))} holds {n_real:,} recorded (real) events; `synth` would "
+                      f"{'delete' if clear else 'mix synthetic tokens into'} them. Run synth on the synthetic data set "
+                      "(`hft synth`) or point paths.data_dir at another folder.[/]")
+        raise typer.Exit(2)
     if clear and s.paths.events_dir.exists():
         shutil.rmtree(s.paths.events_dir)
+        meta = _meta()
+        for rec in meta.files():  # the manifest must not keep checksums of the files just deleted
+            meta.remove_file(rec["path"])
     t0 = time.perf_counter()
     data = SyntheticMarket(s).generate()
     store = _store()
@@ -184,6 +290,7 @@ def synth(hours: float = typer.Option(None, help="Override synthetic.duration_ho
         (s.paths.metadata_dir / "tokens.parquet").unlink()
     write_metadata(data.metadata, s.paths.metadata_dir / "tokens.parquet")
     data.truth.write_parquet(s.paths.metadata_dir / "synthetic_truth.parquet")
+    write_marker(s.paths.resolve("data_dir"), "synthetic")
     console.print(f"[green]synthetic market:[/] {data.events.height:,} events, {data.truth.height} tokens, "
                   f"{int(data.truth['complete_ms'].is_not_null().sum())} graduations in {time.perf_counter() - t0:.1f}s")
 
@@ -203,6 +310,7 @@ def collect_history(max_signatures: int = typer.Option(None), mode: str = typer.
     from pumpfun_hft.collectors.sol_price import provider_from_settings
     from pumpfun_hft.core.events import EventDecoder
 
+    _require_real_store("collect-history")
     s, secrets = S(), Secrets.load()
     url = secrets.get("solana_rpc_url")
     if not url:
@@ -226,32 +334,213 @@ def collect_history(max_signatures: int = typer.Option(None), mode: str = typer.
 
 
 @app.command("verify-data")
-def verify_data(gap_slots: int = typer.Option(None, help="Report slot gaps wider than this")) -> None:
+def verify_data(gap_slots: int = typer.Option(None, help="Report slot gaps wider than this"),
+                adopt: bool = typer.Option(False, help="Checksum files the manifest does not know yet into it")) -> None:
     """Verify Parquet checksums against the manifest and report slot gaps."""
     store = _store()
     bad = store.verify()
     console.print(f"files: {store.stats()} · checksum mismatches: {len(bad)}")
     for b in bad[:20]:
         console.print(f"  [red]{b}[/]")
-    gaps = store.detect_gaps(gap_slots or S().collector.gap_slot_threshold)
+    new = store.unregistered()
+    if new and adopt:
+        console.print(f"added {store.adopt(new)} file(s) to the manifest")
+    elif new:
+        console.print(f"[yellow]{len(new)} file(s) are not in this data set's manifest yet (written before it had its own "
+                      f"meta.sqlite, or copied in), so they were not checked: `{_cli()} verify-data --adopt` records their "
+                      "checksums now.[/]")
+    try:
+        gaps = store.detect_gaps(gap_slots or S().collector.gap_slot_threshold)
+    except Exception as exc:  # noqa: BLE001 - e.g. a corrupt file: report it, the checksums above say which
+        console.print(f"[red]could not read the events for the gap check: {escape(str(exc))}[/]")
+        raise typer.Exit(1) from exc
     console.print(f"slot gaps > threshold: {gaps.height}")
     if gaps.height:
         console.print(gaps.head(20))
+    if bad:
+        raise typer.Exit(1)
+
+
+def _fmt_bytes(n: int) -> str:
+    size = float(n)
+    for unit in ("B", "KB", "MB"):
+        if size < 1024:
+            return f"{size:,.0f} {unit}" if unit == "B" else f"{size:,.1f} {unit}"
+        size /= 1024
+    return f"{size:,.1f} GB"
+
+
+def _iso_minute(ms: int) -> str:
+    from pumpfun_hft.utils.timeutil import ms_to_dt
+
+    return ms_to_dt(ms - ms % 60_000).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+@app.command("data-info")
+def data_info(train_frac: float = typer.Option(0.6, help="Share of the events to train on when suggesting --end")) -> None:
+    """Where the data set lives and what it holds: events, time range, models, runs, and a train / test split."""
+    import joblib
+
+    from pumpfun_hft.collectors.datasets import describe, time_quantile
+
+    s = S()
+    p = s.paths
+    active = s.datasets.active
+    info = describe(p.events_dir, p.metadata_subdir)
+    rows: list[tuple[str, str]] = []
+    rows.append(("data set", f"{active} (`{_cli()}`)" if active else "not selected (paths as configured; hft.ps1 selects one)"))
+    rows.append(("folder", escape(str(_data_root()))))
+    rows.append(("holds", f"{info.contents} events" + (f" (marked {info.marker})" if info.marker else "")))
+    if info.events:
+        rows.append(("events", f"{info.events:,} in {len(info.days)} day(s), {info.files:,} file(s), {_fmt_bytes(info.bytes)}"))
+        rows.append(("time range", info.span()))
+        if info.contents == "mixed":
+            rows.append(("", f"[yellow]{info.real_events:,} recorded + {info.synthetic_events:,} synthetic events[/]"))
+    models_dir = p.resolve("models_dir")
+    models = sorted(models_dir.glob("*.joblib"), key=lambda f: f.stat().st_mtime, reverse=True) if models_dir.is_dir() else []
+    rows.append(("models", f"{len(models)} in {escape(str(models_dir))}"))
+    for f in models[:8]:
+        try:
+            b = joblib.load(f)
+            cut = ms_to_iso(int(b["train_end_ms"])) if b.get("train_end_ms") is not None else "?"
+            rows.append(("", f"{escape(f.name)} · target {b.get('target', '?')} · cut-off {cut} · "
+                             f"trained on {b.get('dataset', 'unrecorded')} data"))
+        except Exception as exc:  # noqa: BLE001 - list what can be read
+            rows.append(("", f"{escape(f.name)} · unreadable ({type(exc).__name__})"))
+    runs_dir = p.resolve("reports_dir") / "runs"
+    n_runs = sum(1 for d in runs_dir.iterdir() if d.is_dir()) if runs_dir.is_dir() else 0
+    rows.append(("backtests", f"{n_runs} saved in {escape(str(runs_dir))}"))
+    for label, value in rows:  # plain lines, never truncated: the paths are what people copy
+        console.print(f"[bold]{label:<11}[/]{value}", soft_wrap=True)
+    if active and info.events and info.contents not in (active, "mixed"):
+        console.print(f"[red]This folder holds {info.contents} data but is used as the {active} data set.[/]")
+    if not info.events:
+        console.print("No events yet." + (" `hftr find-data` lists every event store on this computer." if active != "synthetic" else
+                                          " Create a synthetic market: `hft synth --hours 24`."))
+        return
+    if not 0.0 < train_frac < 1.0:
+        raise typer.BadParameter("--train-frac must be between 0 and 1")
+    q = time_quantile(p.events_dir, train_frac)
+    if q is not None and info.start_ms is not None and info.start_ms < q:
+        end_iso = _iso_minute(q)
+        console.print(f"\nTrain on the first {train_frac:.0%} of the events and test on the rest:")
+        console.print(f"  {_cli()} train-model --model lightgbm --target fwd_up --end {end_iso}", soft_wrap=True)
+        console.print(f"  {_cli()} backtest --strategy ml_signal --start <the training cut-off that train-model prints>",
+                      soft_wrap=True)
+        console.print("[dim]The cut-off is at or before --end: rows whose label window the data does not fully cover are "
+                      "left out of training.[/]")
+
+
+def _search_roots(extra: list[Path]) -> list[Path]:
+    s = S()
+    roots = [*extra, s.datasets.root("synthetic"), s.datasets.root("real"), _data_root(), PROJECT_ROOT, PROJECT_ROOT.parent]
+    roots += [r.parent for r in (s.datasets.root("synthetic"), s.datasets.root("real"), _data_root())]
+    if os.name == "nt":
+        roots += [Path("C:/pumpfun"), Path(PROJECT_ROOT.anchor) / "pumpfun"]
+    roots.append(Path.home())
+    out: list[Path] = []
+    for r in roots:
+        if r not in out:
+            out.append(r)
+    return out
+
+
+@app.command("find-data")
+def find_data(path: list[Path] = typer.Option(None, "--path", help="Also search this folder (repeatable)"),
+              depth: int = typer.Option(7, help="How many folder levels below each search root to look")) -> None:
+    """Find every event store on this computer and say what each holds (real / synthetic / mixed)."""
+    from pumpfun_hft.collectors.datasets import describe, find_event_dirs
+
+    roots = _search_roots(list(path or []))
+    console.print("searching " + ", ".join(escape(str(r)) for r in roots if r.is_dir()) + " ...")
+    found = find_event_dirs(roots, depth)
+    if not found:
+        console.print("[yellow]No event stores found. Add a folder to search with --path.[/]")
+        raise typer.Exit(1)
+    current = os.path.normcase(str(S().paths.events_dir.resolve()))
+    console.print(f"\n[bold]{len(found)} event store(s)[/] (data-set folder, then what it holds; times in UTC)")
+    for ev in found:
+        info = describe(ev, S().paths.metadata_subdir)
+        here = "  [green](this data set)[/]" if os.path.normcase(str(ev)) == current else ""
+        sub = "" if ev.name == S().paths.events_subdir else f"  (events in the '{escape(ev.name)}' subfolder)"
+        console.print(f"\n{escape(str(info.root))}{sub}{here}", soft_wrap=True)
+        console.print(f"    {info.contents} · {info.events:,} events, {info.real_events:,} of them recorded (real) · "
+                      f"{_fmt_bytes(info.bytes)}\n    {info.span()}", soft_wrap=True)
+    console.print()
+    console.print("Use recorded data with hftr: set HFT_REAL_DIR in hft.ps1 to its data-set folder (when it holds only real "
+                  "events), or copy the recorded events into the current real folder: `hftr import-data --from <folder>`.")
+
+
+@app.command("import-data")
+def import_data(from_: Path = typer.Option(..., "--from", help="A data-set folder (or its events folder) holding recorded events"),
+                ) -> None:
+    """Copy the recorded (real) events of another folder into this real data set; synthetic tokens are left behind.
+
+    The source is never modified. Events already in this data set are de-duplicated."""
+    from pumpfun_hft.collectors.datasets import describe, detect_kind, import_events, resolve_events_dir, write_marker
+
+    s = S()
+    p = s.paths
+    if s.datasets.active != "real":
+        console.print("[red]import-data copies recorded events into the real data set: run it as `hftr import-data --from ...`.[/]")
+        raise typer.Exit(2)
+    on_disk = detect_kind(_data_root(), p.events_subdir, p.metadata_subdir)
+    if on_disk == "synthetic":
+        console.print(f"[red]{escape(str(_data_root()))} holds a synthetic market; point HFT_REAL_DIR at an empty folder "
+                      "(or one with only recorded events) first.[/]")
+        raise typer.Exit(2)
+    try:
+        src = resolve_events_dir(from_, p.events_subdir)
+    except FileNotFoundError as exc:
+        console.print(f"[red]{escape(str(exc))}[/]")
+        raise typer.Exit(1) from exc
+    if os.path.normcase(str(src)) == os.path.normcase(str(p.events_dir.resolve())):
+        console.print("[yellow]That is this data set's own event store; nothing to import.[/]")
+        raise typer.Exit(1)
+    info = describe(src, p.metadata_subdir)
+    console.print(f"source {escape(str(src))}: {info.events:,} events ({info.contents}; {info.real_events:,} recorded), {info.span()}")
+    if info.real_events == 0:
+        console.print("[yellow]The source holds no recorded events (only a synthetic market): nothing to import.[/]")
+        raise typer.Exit(1)
+    write_marker(_data_root(), "real")
+    rep = import_events(src, _store(), _metadata_path(), p.metadata_subdir,
+                        progress=lambda day, n: console.print(f"  {day}: {n:,} events"))
+    console.print(f"[green]imported[/] {rep.written:,} events from {rep.days} day(s) · left behind {rep.skipped_synthetic:,} "
+                  f"synthetic · removed {rep.duplicates_removed:,} duplicates · token metadata rows {rep.tokens_metadata:,}")
+    console.print(f"this data set now: {describe(p.events_dir, p.metadata_subdir).span()}")
+    console.print("The source folder was not changed; delete it yourself once you have checked the result "
+                  "(`hftr data-info`, `hftr verify-data`).")
 
 
 # ============================================================================ research
-def _ml_cutoff_notice(names: list[str], events: pl.DataFrame) -> None:
-    """ml_signal never trades before its model's training cut-off: say so when the data starts earlier."""
-    if "ml_signal" not in names:
-        return
+def _preflight_models(names: list[str]) -> Any:
+    """Load the trained models a run will use before it starts, so a missing file or a model of the other data
+    set is a one-line error instead of a traceback. Returns the ml_signal strategy (or None)."""
+    from pumpfun_hft.ml.rug_model import build_rug_scorer
     from pumpfun_hft.strategies.base import build_strategy
 
-    strat: Any = build_strategy("ml_signal", S())  # fails here, with a clear message, if there is no model
+    s = S()
+    try:
+        if s.rug_model.use_trained_model:
+            build_rug_scorer(s.rug_model, s.paths.resolve("models_dir"), s.datasets.active)
+        strat: Any = build_strategy("ml_signal", s) if "ml_signal" in names else None
+    except (ValueError, FileNotFoundError) as exc:
+        console.print(f"[red]{escape(str(exc))}[/]")
+        raise typer.Exit(1) from exc
+    if strat is not None:
+        console.print(f"ml_signal model: {escape(strat.path.name)} (cut-off {ms_to_iso(strat.train_end_ms)})")
+    return strat
+
+
+def _ml_cutoff_notice(names: list[str], events: pl.DataFrame) -> None:
+    """Check the models; ml_signal never trades before its model's training cut-off: say so when the data starts earlier."""
+    strat = _preflight_models(names)
+    if strat is None:
+        return
     t0, t1 = int(events["ts_ms"].min()), int(events["ts_ms"].max())
-    console.print(f"ml_signal model: {strat.path.name} (cut-off {ms_to_iso(strat.train_end_ms)})")
     if strat.train_end_ms >= t1:
         console.print("[yellow]All of the selected data is before the model's training cut-off: ml_signal will not trade. "
-                      "Train on older data (train-model --end ...) and test on the rest.[/]")
+                      f"Train on older data (train-model --end ...; `{_cli()} data-info` suggests one) and test on the rest.[/]")
     elif strat.train_end_ms > t0:
         console.print(f"[yellow]ml_signal trades only after {ms_to_iso(strat.train_end_ms)}; "
                       f"use --start {ms_to_iso(strat.train_end_ms)} for a clean out-of-sample window.[/]")
@@ -357,6 +646,7 @@ def optimize(strategy: str = typer.Option(..., help="Strategy with an optimizer.
     from pumpfun_hft.optimizer.study import OptimizationStudy
 
     events = _load_events(None, None)
+    _ml_cutoff_notice([strategy], events)
     res = OptimizationStudy(S(), events, str(_metadata_path()), strategy, method, trials, None, workers).run(final_evaluation=final)
     out = S().paths.resolve("reports_dir") / "optimize" / res.study_id
     out.mkdir(parents=True, exist_ok=True)
@@ -375,6 +665,7 @@ def walkforward(strategy: str = typer.Option(...), method: str = typer.Option(No
     from pumpfun_hft.optimizer.study import WalkForwardAnalysis
 
     events = _load_events(None, None)
+    _ml_cutoff_notice([strategy], events)
     res = WalkForwardAnalysis(S(), events, str(_metadata_path()), strategy, method, trials, None, workers).run()
     out = S().paths.resolve("reports_dir") / "walkforward" / f"{strategy}-{int(time.time())}"
     out.mkdir(parents=True, exist_ok=True)
@@ -432,17 +723,28 @@ def train_model(model: str = typer.Option(None, help="logistic | random_forest |
     """Build a point-in-time dataset, run purged CV, report importance/SHAP and save the model."""
     from pumpfun_hft.backtester.replay import load_metadata
     from pumpfun_hft.ml.dataset import build_snapshot_dataset, feature_columns
-    from pumpfun_hft.ml.models import train_and_evaluate
+    from pumpfun_hft.ml.models import NotEnoughTrainingData, train_and_evaluate
 
     s = S()
     ml = s.ml.model_copy(update={"model": model}) if model else s.ml
     tgt = target or ("fwd_up" if s.ml.target == "fwd_return" else s.ml.target)
     events = _load_events(start, end)
-    ds = build_snapshot_dataset(s, events, load_metadata(_metadata_path()))
+    # synthetic markets have no recording gaps (their quiet stretches are real lulls); real recordings do
+    ds = build_snapshot_dataset(s, events, load_metadata(_metadata_path()),
+                                max_gap_s=None if _is_synthetic() else s.ml.label_max_data_gap_s)
     if ds.is_empty():
         console.print("[yellow]No snapshots: the selected data has no tokens old enough to snapshot.[/]")
         raise typer.Exit(1)
-    rep = train_and_evaluate(ds, feature_columns(ds), tgt, ml, s.app.seed)
+    try:
+        rep = train_and_evaluate(ds, feature_columns(ds), tgt, ml, s.app.seed)
+    except NotEnoughTrainingData as exc:
+        console.print(f"[yellow]{escape(str(exc))}[/]")
+        raise typer.Exit(1) from exc
+    flag = "fwd_complete" if tgt in ("fwd_up", "fwd_return") else "label_complete"
+    dropped = int((~ds[flag]).sum())
+    if dropped:
+        console.print(f"left out {dropped:,} of {ds.height:,} snapshots whose label window the data does not fully cover "
+                      "(end of the data, or a recording gap)")
     console.print(f"{rep.kind} → {tgt}: rows {rep.n_rows:,}, base rate {rep.base_rate:.3f}, CV mean {json.dumps(rep.mean)}")
     console.print(rep.importance.head(15))
     if save:
@@ -454,21 +756,25 @@ def train_model(model: str = typer.Option(None, help="logistic | random_forest |
         # the label definition travels with the model, so ml_signal scores and exits on the same terms
         rep.bundle.update({"snapshot_delays_s": list(s.rug_model.snapshot_delays_s), "label_horizon_s": s.rug_model.label_horizon_s,
                            "fwd_return_horizon_s": s.ml.fwd_return_horizon_s, "fwd_return_threshold": s.ml.fwd_return_threshold,
-                           "data_start_ms": int(events["ts_ms"].min()), "data_end_ms": int(events["ts_ms"].max())})
+                           "data_start_ms": int(events["ts_ms"].min()), "data_end_ms": int(events["ts_ms"].max()),
+                           "dataset": S().datasets.active or _kind_on_disk()})
         path = rep.save(s.paths.resolve("models_dir") / f"{mid}.joblib")
         cut = ms_to_iso(rep.train_end_ms)
-        console.print(f"saved model {path}")
-        console.print(f"training cut-off {cut}: the model will not trade any event before it.")
+        console.print(f"saved model {escape(str(path))}", soft_wrap=True)
+        console.print(f"training cut-off {cut} (the model will not trade any event before it)", soft_wrap=True)
         if tgt == "rug":
-            console.print("use it: set rug_model.use_trained_model: true and rug_model.model_path to that file")
+            console.print(f"use it: set rug_model.use_trained_model: true and rug_model.model_path: {path.name} "
+                          "(looked up in this data set's models folder)")
         else:
-            console.print(f"use it: backtest --strategy ml_signal --start {cut}   (ml_signal loads the newest fwd_up model)")
-            store_end = _store().read()["ts_ms"].max() if end else int(events["ts_ms"].max())
+            console.print(f"use it: {_cli()} backtest --strategy ml_signal --start {cut}", soft_wrap=True)
+            console.print("(ml_signal loads the newest fwd_up model of this data set)")
+            store_end = _store().scan(columns=["ts_ms"]).select(pl.col("ts_ms").max()).collect().item() if end \
+                else int(events["ts_ms"].max())
             t0 = int(events["ts_ms"].min())
             if rep.train_end_ms >= t0 + 0.9 * (int(store_end) - t0):
                 console.print("[yellow]Almost none of your stored data is after the cut-off, so there is nothing left to "
                               "test it on. Retrain on the older part with --end (e.g. the first 60 %), backtest the rest "
-                              "with --start, or paper trade it on new live data.[/]")
+                              f"with --start (`{_cli()} data-info` suggests a split), or paper trade it on new live data.[/]")
 
 
 @app.command()
@@ -494,6 +800,11 @@ def query(sql: str = typer.Argument(..., help="SQL over the DuckDB warehouse (ta
     try:
         with pl.Config(tbl_rows=limit, tbl_cols=30, fmt_str_lengths=60):
             console.print(wh.query(sql).head(limit))
+    except Exception as exc:  # noqa: BLE001 - SQL errors are the user's to fix: show them without a traceback
+        console.print(f"[red]{escape(str(exc))}[/]")
+        if "events" in sql.lower() and not any(S().paths.events_dir.glob("date=*/*.parquet")):
+            console.print(f"[yellow]This data set has no events yet ({escape(str(S().paths.events_dir))}).[/]")
+        raise typer.Exit(1) from exc
     finally:
         wh.close()
 
@@ -553,6 +864,7 @@ def _live_components(paper: bool) -> tuple[Any, ...]:
 @app.command()
 def stream(minutes: float = typer.Option(0, help="Stop after N minutes (0 = run until Ctrl-C)")) -> None:
     """Run the live stream collector only (records events, prints latency status)."""
+    _require_real_store("stream")
     s, _, latency, _, _, _, collector = _live_components(True)
 
     async def run() -> None:
@@ -584,6 +896,7 @@ def _run_trader(paper: bool, strategies: list[str], minutes: float, flatten_on_e
     from pumpfun_hft.execution.engine import LiveTrader
     from pumpfun_hft.execution.gateway import LiveGateway, PaperGateway
 
+    _preflight_models(strategies or list(S().strategy.active))
     s, secrets, latency, rpc, decoder, meta, collector = _live_components(paper)
     queue = collector.subscribe()
     holder: dict[str, Any] = {}
@@ -635,6 +948,7 @@ def _run_trader(paper: bool, strategies: list[str], minutes: float, flatten_on_e
 def paper(strategy: list[str] = typer.Option(None, "--strategy"), minutes: float = typer.Option(0),
           flatten_on_exit: bool = typer.Option(True)) -> None:
     """Paper trading: live data, simulated execution (no wallet needed)."""
+    _require_real_store("paper")
     _run_trader(True, list(strategy or []), minutes, flatten_on_exit)
 
 
@@ -646,6 +960,7 @@ def live(strategy: list[str] = typer.Option(None, "--strategy"), minutes: float 
     if S().app.mode != "live" or not confirm_live:
         console.print("[red]Refusing to trade live: set app.mode: live in your config and pass --confirm-live.[/]")
         raise typer.Exit(2)
+    _require_real_store("live")
     console.print("[bold red]LIVE TRADING — real transactions will be signed and sent.[/]")
     _run_trader(False, list(strategy or []), minutes, flatten_on_exit)
 

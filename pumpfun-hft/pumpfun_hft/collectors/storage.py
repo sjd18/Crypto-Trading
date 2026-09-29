@@ -142,6 +142,21 @@ class ParquetEventStore:
                 bad.append(rec["path"])
         return bad
 
+    def unregistered(self) -> list[Path]:
+        """Parquet files on disk that the manifest does not know (e.g. written under another manifest)."""
+        if self.meta is None:
+            return []
+        known = {rec["path"] for rec in self.meta.files()}
+        return [f for f in sorted(self.root.glob("date=*/*.parquet")) if f.relative_to(self.root).as_posix() not in known
+                and str(f.relative_to(self.root)) not in known]
+
+    def adopt(self, files: list[Path]) -> int:
+        """Checksum ``files`` into the manifest as they are now (from then on :meth:`verify` covers them)."""
+        for f in files:
+            df = pl.read_parquet(f, columns=["slot"], memory_map=False)
+            self._register(f, f.parent.name.split("=", 1)[1], df, f.name == "data.parquet")
+        return len(files)
+
     def detect_gaps(self, max_slot_gap: int, start_ms: int | None = None, end_ms: int | None = None) -> pl.DataFrame:
         """Slot ranges without any event that are wider than ``max_slot_gap`` slots."""
         lf = self.scan(start_ms=start_ms, end_ms=end_ms, columns=["slot", "ts_ms"])

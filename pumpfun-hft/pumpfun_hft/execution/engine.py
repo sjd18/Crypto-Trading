@@ -96,7 +96,7 @@ class LiveTrader:
         built = [build_strategy(n, s) for n in names]
         overlay = build_strategy(s.strategy.exit_overlay, s) if s.strategy.exit_overlay else None
         self.runtime = StrategyRuntime(s, built, overlay, self.market, self.features, self.wallets, self.creators,
-                                       build_rug_scorer(s.rug_model), self.portfolio, self.risk, self.sizer, self.posmgr,
+                                       build_rug_scorer(s.rug_model, s.paths.resolve("models_dir"), s.datasets.active), self.portfolio, self.risk, self.sizer, self.posmgr,
                                        self.sim, self.discovery, record_signals=True, max_signal_records=10_000, signal_ring=True)
         self.gateway = gateway_factory(self.sim)
         self.queue: asyncio.PriorityQueue[tuple[int, int, Order]] = asyncio.PriorityQueue(maxsize=s.live.queue_maxsize)
