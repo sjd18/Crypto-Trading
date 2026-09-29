@@ -72,6 +72,10 @@ class TrainedRugModel:
     """Wraps a persisted classifier bundle ``{"model", "features", "train_end_ms", "kind"}``."""
 
     def __init__(self, bundle: dict[str, Any]) -> None:
+        target = bundle.get("target", "rug")
+        if target != "rug":  # e.g. a fwd_up model: P(up) read as P(rug) would block the best tokens
+            raise ValueError(f"this model predicts {target!r}, not 'rug'; trade it with the ml_signal strategy "
+                             "(strategy.params.ml_signal.model_path) instead of rug_model.model_path")
         self.model = bundle["model"]
         self.features: list[str] = list(bundle["features"])
         self.train_end_ms = int(bundle["train_end_ms"])

@@ -220,6 +220,7 @@ Architecture
     rug_avoidance.py        exit before rug signatures (overlay) and veto risky entries
     migration.py            trade curve completion and migration to PumpSwap
     sniper.py               enter in the first seconds after launch
+    ml_signal.py            trade a model trained with train-model (fwd_up / migrate)
 
 Data flow
     Event -> MarketState / FeatureEngine -> StrategyContext -> Strategy.generate_signal
@@ -242,6 +243,7 @@ Example
 - **`strategies/liquidity_sweep.py`** — Liquidity sweep detection: identify exhaustion after large buys.
 - **`strategies/mean_reversion.py`** — Mean reversion on failed pumps.
 - **`strategies/migration.py`** — Migration strategy: trade curves that are about to graduate to PumpSwap.
+- **`strategies/ml_signal.py`** — ML signal: trade the probability from a model trained with ``train-model``.
 - **`strategies/momentum_ignition.py`** — Momentum ignition: buy young tokens whose launch is turning explosive.
 - **`strategies/rug_avoidance.py`** — Rug avoidance overlay: exit before rug signatures complete; veto risky entries.
 - **`strategies/runtime.py`** — Strategy runtime: the single decision layer shared by backtests, paper and live trading.

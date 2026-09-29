@@ -106,9 +106,40 @@ python -m pumpfun_hft.main train-model --model lightgbm --target rug
 * **Models**: logistic regression, random forest, XGBoost, LightGBM, CatBoost. Reports AUC, log
   loss, Brier score and precision in the top decile per fold; importance as model-native,
   permutation (last fold) and mean |SHAP|.
-* **Deployment**: point `rug_model.model_path` at the saved bundle and set
-  `rug_model.use_trained_model: true`. The model refuses to score any event before its training
-  cut-off (`LookAheadError`), so it cannot be backtested on the data it learned from.
+* **Training cut-off**: every model records the end of its last label window. It refuses to
+  score any event before it, so it can never be backtested on the data it learned from. Train on
+  the older part of your data with `--end` and test on the rest with `--start` (both printed by
+  `train-model`).
+
+### Deploying a model
+
+Which slot a model goes in depends on its target; each slot refuses the other kind.
+
+**`fwd_up` (or `migrate`) → the `ml_signal` strategy**, which buys when the model's probability
+is at least `min_prob`:
+
+```bash
+train-model --model lightgbm --target fwd_up --end 2026-09-20T00:00:00Z   # train on the older data
+backtest     --strategy ml_signal --start <cut-off printed above>          # out-of-sample test
+paper-replay --strategy ml_signal --start <cut-off>                        # same, through the live engine
+paper        --strategy ml_signal --minutes 120                            # live data, simulated fills
+```
+
+* `strategy.params.ml_signal.model_path: latest` loads the newest `*-fwd_up-*.joblib` in
+  `paths.models_dir`; set a file name to pin one model.
+* It scores each token once per training snapshot delay (`rug_model.snapshot_delays_s`), the only
+  moments the model was trained on, with the same feature code that built the training rows
+  (`ml.dataset.model_features`).
+* Exits: held for at most the label horizon (`ml.fwd_return_horizon_s`), plus the usual stop /
+  take-profit / trailing stop and the rug-avoidance overlay. Entries are also gated by
+  `max_rug_prob`, the overlay's veto and the cost gate
+  (`p * up_return - (1 - p) * down_return` vs `strategy.cost_gate_multiple` x round-trip cost).
+* After a run the CLI prints the funnel — scored, below `min_prob`, rug-blocked, signals,
+  skipped before cut-off — so a run with no trades shows where the candidates went.
+* `optimize --strategy ml_signal` tunes `min_prob` and `max_rug_prob`.
+
+**`rug` → the rug scorer** used by every strategy's `max_rug_prob` gate and the overlay: set
+`rug_model.use_trained_model: true` and `rug_model.model_path` to the saved file.
 
 On the default synthetic market the rug model reaches a purged-CV AUC of about 0.82 — the
 planted serial-rugger structure is learnable. Expect lower numbers on real data.

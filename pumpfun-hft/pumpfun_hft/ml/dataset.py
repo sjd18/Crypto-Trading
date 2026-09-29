@@ -39,6 +39,23 @@ from pumpfun_hft.ml.rug_model import RUG_FEATURES, rug_features
 _TRADES = [EventKind.TRADE.value, EventKind.AMM_BUY.value, EventKind.AMM_SELL.value]
 
 
+#: every column ``model_features`` produces (the inputs a trained model may use)
+MODEL_FEATURE_NAMES: frozenset[str] = frozenset(("creator_score", "creator_launches", *FEATURE_NAMES,
+                                                 *(f"rug_{k}" for k in RUG_FEATURES)))
+
+
+def model_features(view: Any, st: Any, cs: Any) -> dict[str, float]:
+    """Every model input for one token at one instant: online features, creator score, rug features.
+
+    The single source of the feature row for both training (``build_snapshot_dataset``) and live
+    scoring (``strategies.ml_signal``), so a trained model sees the same inputs in both.
+    """
+    row: dict[str, float] = {"creator_score": float(cs.score), "creator_launches": float(cs.launches)}
+    row.update(view.as_dict(FEATURE_NAMES))
+    row.update({f"rug_{k}": v for k, v in rug_features(view, st, cs).items()})
+    return row
+
+
 def build_snapshot_dataset(settings: Any, events: pl.DataFrame, metadata: dict[str, Any] | None = None,
                            delays_s: list[float] | None = None, horizon_s: float | None = None) -> pl.DataFrame:
     """Replay ``events`` and return one feature row per (token, snapshot delay) with labels."""
@@ -66,10 +83,8 @@ def build_snapshot_dataset(settings: Any, events: pl.DataFrame, metadata: dict[s
             return
         cs = creators.score(st.creator)
         row: dict[str, Any] = {"mint": mint, "snapshot_ms": t, "delay_s": delay, "label_end_ms": t + horizon_ms,
-                               "snap_price": st.price, "snap_liq": view.liquidity_sol, "creator_score": cs.score,
-                               "creator_launches": cs.launches}
-        row.update(view.as_dict(FEATURE_NAMES))
-        row.update({f"rug_{k}": v for k, v in rug_features(view, st, cs).items()})
+                               "snap_price": st.price, "snap_liq": view.liquidity_sol}
+        row.update(model_features(view, st, cs))
         rows.append(row)
 
     for r in events.select(list(EVENT_COLUMNS)).iter_rows():
