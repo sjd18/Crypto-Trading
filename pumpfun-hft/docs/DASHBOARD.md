@@ -10,6 +10,10 @@ python -m pumpfun_hft.main dashboard-export     # pumpfun_hft/reports/dashboard.
 Everything is local: Plotly's JavaScript is served from the installed Python package (or inlined
 in the export), so the dashboard works offline.
 
+With a data set selected (`--dataset`, i.e. `hft dashboard` / `hftr dashboard`), the dashboard,
+reports and exports use that data set's `reports/` folder instead of `pumpfun_hft/reports/`, so the
+synthetic and real runs are listed separately. Both use the same port: run one at a time.
+
 | Page | Shows |
 |---|---|
 | Overview | headline KPIs, equity and drawdown, per-strategy breakdown, provenance |

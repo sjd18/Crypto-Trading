@@ -10,3 +10,4 @@ pumpfun_hft/reports/*
 !pumpfun_hft/logs/.gitkeep
 .ipynb_checkpoints/
 *.egg-info/
+data_real/

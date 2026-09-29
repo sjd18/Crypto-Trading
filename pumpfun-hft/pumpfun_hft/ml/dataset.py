@@ -13,8 +13,14 @@ Labels are computed afterwards from strictly later events in ``(snapshot, snapsh
     fwd_return   log(price at horizon / snapshot price) (+ binary ``fwd_up`` >= fwd_return_threshold)
     migrate      1 if the curve migrates within the horizon
 
-Every row carries ``snapshot_ms`` and ``label_end_ms`` so cross-validation can purge samples
-whose label window overlaps the test period.
+Every row carries ``snapshot_ms`` and ``label_end_ms`` (and ``fwd_end_ms`` for the fwd_* labels)
+so cross-validation can purge samples whose label window overlaps the test period.
+
+A label is only trustworthy if the data covers its whole window. ``label_complete`` /
+``fwd_complete`` are false when the window runs past the last event (the end of the data, or of
+``train-model --end``) or, with ``max_gap_s`` set (real data), across a stretch with no events at
+all for longer than that - a recording gap between two ``stream`` sessions, where "no trade seen"
+means "not recorded", not "price unchanged". Training uses only rows with a complete window.
 """
 
 from __future__ import annotations
@@ -23,6 +29,7 @@ import heapq
 import math
 from typing import Any
 
+import numpy as np
 import polars as pl
 
 from pumpfun_hft.analytics.wallet_intel import WalletIntel
@@ -57,8 +64,12 @@ def model_features(view: Any, st: Any, cs: Any) -> dict[str, float]:
 
 
 def build_snapshot_dataset(settings: Any, events: pl.DataFrame, metadata: dict[str, Any] | None = None,
-                           delays_s: list[float] | None = None, horizon_s: float | None = None) -> pl.DataFrame:
-    """Replay ``events`` and return one feature row per (token, snapshot delay) with labels."""
+                           delays_s: list[float] | None = None, horizon_s: float | None = None,
+                           max_gap_s: float | None = None) -> pl.DataFrame:
+    """Replay ``events`` and return one feature row per (token, snapshot delay) with labels.
+
+    ``max_gap_s``: treat a market-wide silence longer than this as missing data (see module docstring);
+    ``None`` for synthetic data, whose quiet stretches are real lulls rather than recording gaps."""
     s = settings
     delays = delays_s or list(s.rug_model.snapshot_delays_s)
     horizon_ms = int((horizon_s or s.rug_model.label_horizon_s) * 1000)
@@ -107,13 +118,37 @@ def build_snapshot_dataset(settings: Any, events: pl.DataFrame, metadata: dict[s
     if not rows:
         return pl.DataFrame()
     snaps = pl.DataFrame(rows, infer_schema_length=None)
-    return attach_labels(snaps, events, settings)
+    return attach_labels(snaps, events, settings, max_gap_s)
 
 
-def attach_labels(snaps: pl.DataFrame, events: pl.DataFrame, settings: Any) -> pl.DataFrame:
+def window_complete(start_ms: np.ndarray, end_ms: np.ndarray, event_ts: np.ndarray, max_gap_ms: int | None) -> np.ndarray:
+    """True where ``[start, end]`` ends by the last event and (with ``max_gap_ms``) spans no silence longer than it."""
+    ts = np.unique(event_ts)
+    if not len(ts):
+        return np.zeros(len(start_ms), dtype=bool)
+    ok = end_ms <= ts[-1]
+    if max_gap_ms is not None and len(ts) > 1:
+        gi = np.nonzero(np.diff(ts) > max_gap_ms)[0]
+        g0, g1 = ts[gi], ts[gi + 1]  # silent stretches (g0, g1), sorted and disjoint
+        if len(g0):
+            k = np.searchsorted(g0, end_ms, side="left")  # gaps starting before the window ends
+            last_end = np.where(k > 0, g1[np.maximum(k - 1, 0)], np.iinfo(np.int64).min)
+            ok &= ~(last_end > start_ms)  # ... of which the latest still reaches into the window
+    return ok
+
+
+def attach_labels(snaps: pl.DataFrame, events: pl.DataFrame, settings: Any, max_gap_s: float | None = None) -> pl.DataFrame:
     """Forward-looking labels from events strictly after each snapshot (see module docstring)."""
     dd = settings.rug_model.label_drawdown_pct / 100.0
     fwd_ms = int(settings.ml.fwd_return_horizon_s * 1000)
+    ts = events["ts_ms"].to_numpy()
+    gap_ms = None if max_gap_s is None else int(max_gap_s * 1000)
+    t0 = snaps["snapshot_ms"].to_numpy().astype(np.int64)
+    snaps = snaps.with_columns(
+        (pl.col("snapshot_ms") + fwd_ms).alias("fwd_end_ms"),
+        pl.Series("label_complete", window_complete(t0, snaps["label_end_ms"].to_numpy().astype(np.int64), ts, gap_ms)),
+        pl.Series("fwd_complete", window_complete(t0, t0 + fwd_ms, ts, gap_ms)),
+    )
     tr = (events.filter(pl.col("kind").is_in(_TRADES))
           .select("mint", "ts_ms", (pl.col("v_sol").cast(pl.Float64) / pl.col("v_tok").cast(pl.Float64) / 1000.0).alias("px"),
                   (pl.col("r_sol").cast(pl.Float64) / 1e9).alias("liq")))

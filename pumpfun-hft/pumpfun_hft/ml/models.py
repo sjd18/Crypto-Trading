@@ -131,14 +131,33 @@ def _fold_metrics(y: np.ndarray, p: np.ndarray) -> dict[str, float]:
     return out
 
 
+class NotEnoughTrainingData(ValueError):
+    """No usable training rows: no label window fully covered by the data, or only one outcome among them."""
+
+
 def train_and_evaluate(df: pl.DataFrame, features: list[str], target: str, cfg: Any, seed: int) -> MlReport:
-    """Purged CV + final fit + importance (see module docstring)."""
-    data = df.drop_nulls(subset=[target]).sort("snapshot_ms")
+    """Purged CV + final fit + importance (see module docstring).
+
+    Only rows whose label window the data fully covers are used (``fwd_complete`` for the fwd_*
+    targets, ``label_complete`` otherwise; see :mod:`pumpfun_hft.ml.dataset`). For fwd_* targets the
+    label window, and so the purge and ``train_end_ms``, ends at ``fwd_end_ms``."""
+    fwd = target in ("fwd_up", "fwd_return")
+    data = df.drop_nulls(subset=[target])
+    flag = "fwd_complete" if fwd else "label_complete"
+    if flag in data.columns:
+        data = data.filter(pl.col(flag))
+    if data.is_empty():
+        raise NotEnoughTrainingData(f"no snapshots with a complete {target!r} label window: the data is too short (or too gappy) "
+                         "for the label horizon")
+    data = data.sort("snapshot_ms")
     x = data.select(features).fill_null(0.0).fill_nan(0.0).to_numpy().astype(np.float64)
     x = np.where(np.isfinite(x), x, 0.0)
     y = data[target].to_numpy().astype(int)
+    if len(np.unique(y)) < 2:
+        raise NotEnoughTrainingData(f"all {len(y):,} usable snapshots have {target} = {int(y[0])}: a classifier needs both "
+                                    "outcomes; use more data")
     times = data["snapshot_ms"].to_numpy()
-    ends = data["label_end_ms"].to_numpy()
+    ends = data["fwd_end_ms" if fwd and "fwd_end_ms" in data.columns else "label_end_ms"].to_numpy()
     groups = data["mint"].to_numpy()
     params = dict(cfg.params.get(cfg.model, {}))
     cv = PurgedForwardSplit(cfg.cv_folds, int(cfg.embargo_s * 1000))
@@ -169,7 +188,12 @@ def train_and_evaluate(df: pl.DataFrame, features: list[str], target: str, cfg: 
         "shap": [imp_shap.get(f, float("nan")) for f in features],
     }).sort("native", descending=True, nulls_last=True)
     keys = ["auc", "log_loss", "brier", "precision_top_decile", "base_rate"]
-    mean = {k: float(np.nanmean([f[k] for f in folds])) if folds else float("nan") for k in keys}
+    def _mean(k: str) -> float:
+        v = np.array([f[k] for f in folds], dtype=float)
+        v = v[np.isfinite(v)]
+        return float(v.mean()) if len(v) else float("nan")
+
+    mean = {k: _mean(k) for k in keys}
     train_end = int(ends.max())
     bundle = {"model": final, "features": features, "train_end_ms": train_end, "kind": cfg.model, "target": target,
               "cv_mean": mean}

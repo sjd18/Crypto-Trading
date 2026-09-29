@@ -14,6 +14,8 @@ Architecture
     slotclock.py   millisecond timestamps from (slot, block_time) anchors
     sol_price.py   SOL/USD providers (static, CSV series with as-of lookups)
     synthetic.py   SyntheticMarket: exact-math synthetic launches, rugs, migrations, wallets
+    datasets.py    synthetic vs real data-set folders: kind markers, finding event stores on disk,
+                   copying real events between stores (synthetic tokens left behind)
 
 Data flow
     RPC / WS  ->  core.events.EventDecoder  ->  Event rows  ->  ParquetEventStore  ->  replay

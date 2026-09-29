@@ -44,26 +44,54 @@ python -m pumpfun_hft.main dashboard-export       # one self-contained HTML file
 pytest                                            # full test suite (pytest -m "not slow" to skip notebooks)
 ```
 
-On Windows, `hft.ps1` saves retyping all of that: load it once per PowerShell window with
-`. .\hft.ps1` (edit the two paths at the top first), then run `hft synth --hours 24`,
-`hft backtest --strategy smart_money`, and so on. `hft-help` prints a cheat sheet of every command.
+### Two data sets: synthetic and real
 
-Real data instead of the synthetic market:
+Synthetic and recorded (real) data are kept apart as two **data sets**, each one folder that
+holds everything made from it: `events/`, `metadata/`, `meta.sqlite` (manifest, checkpoints, live
+state), `warehouse.duckdb`, `models/` and `reports/`. Select one with the global option
+`--dataset synthetic|real` (folders: `datasets.synthetic` / `datasets.real` in the config, or
+`--data-root`). The CLI refuses to mix them: `synth` never runs on (or deletes) recorded events,
+`stream` / `paper` / `live` / `collect-history` never record into a synthetic folder, and a model
+trained on one data set is refused on the other.
+
+On Windows, `hft.ps1` wraps this: `hft <command>` runs on the synthetic data set and
+`hftr <command>` on the real one (folders set at the top of the file). Load it with
+`. .\hft.ps1`, run `hft-install-profile` once to load it in every PowerShell window, and
+`hft-doctor` to check the setup. `hft-help` prints a cheat sheet of every command.
+
+```powershell
+hft synth --hours 24                          # synthetic market -> synthetic data set
+hft backtest --strategy smart_money
+
+hftr stream --minutes 60                      # record Pump.fun -> real data set
+hftr data-info                                # what is recorded, time range, a train/test split
+hftr find-data                                # recorded somewhere else? every event store on this PC
+hftr import-data --from C:\old\folder         # copy those recorded events into the real data set
+hftr backtest --strategy smart_money
+```
+
+Real data without `hft.ps1`:
 
 ```bash
 # put SOLANA_RPC_URL / SOLANA_WS_URL in .env (a paid RPC is strongly recommended)
-python -m pumpfun_hft.main collect-history --max-signatures 20000    # resumable backfill
-python -m pumpfun_hft.main stream --minutes 60                       # live recorder + latency stats
-python -m pumpfun_hft.main verify-data                               # checksums + slot gaps
+python -m pumpfun_hft.main --dataset real collect-history --max-signatures 20000   # resumable backfill
+python -m pumpfun_hft.main --dataset real stream --minutes 60                      # live recorder + latency stats
+python -m pumpfun_hft.main --dataset real verify-data                              # checksums + slot gaps
+python -m pumpfun_hft.main --dataset real data-info                                # what the data set holds
 ```
+
+Without `--dataset`, commands use `paths` from the config exactly as written (the quick start
+above), and the same guards still stop `synth` from deleting recorded events and the recorders
+from writing into a synthetic market.
 
 ## Commands
 
 | Command | What it does |
 |---|---|
 | `init`, `check-config` | Create folders and `.env`; validate config and show which secrets are present (never their values) |
-| `synth` | Generate a synthetic market into the event store |
-| `collect-history`, `stream`, `verify-data` | Historical backfill, live recording, integrity checks |
+| `synth` | Generate a synthetic market into the event store (synthetic data set only) |
+| `data-info`, `find-data`, `import-data` | What the data set holds (events, time range, models) and a suggested train / test split; find every event store on the computer; copy recorded events from another folder into the real data set |
+| `collect-history`, `stream`, `verify-data` | Historical backfill, live recording (real data set only), integrity checks |
 | `backtest` | Event-driven backtest; saves the run, the report (HTML / PDF / CSV / JSON) and a Monte Carlo summary |
 | `optimize`, `walkforward` | Parameter search on train, selection on validation, optional sealed final evaluation; walk-forward |
 | `montecarlo`, `report` | Re-run Monte Carlo or regenerate a report for a saved run |
@@ -73,8 +101,9 @@ python -m pumpfun_hft.main verify-data                               # checksums
 | `paper`, `live` | Paper trading on the live stream; live trading (requires `app.mode: live` **and** `--confirm-live`) |
 | `latency-probe`, `update-idl`, `docs` | Measure RPC / Metis latency; refresh IDLs; regenerate `docs/MODULES.md` |
 
-Global options: `--config my.yaml` (deep-merged over `configs/default.yaml`) and repeatable
-`--set dotted.key=value` overrides, e.g. `--set backtest.initial_capital_sol=5`.
+Global options: `--dataset synthetic|real` and `--data-root <folder>` (see above), `--config my.yaml`
+(deep-merged over `configs/default.yaml`) and repeatable `--set dotted.key=value` overrides, e.g.
+`--set backtest.initial_capital_sol=5`.
 
 ## Configuration and secrets
 

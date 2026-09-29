@@ -14,6 +14,11 @@ collect / synth ─> verify-data ─> backtest ─> optimize (train → validati
 
 ## 1. Data
 
+* Synthetic and recorded data are separate **data sets** (`--dataset synthetic|real`; `hft` /
+  `hftr` in `hft.ps1`), each a folder with its own events, manifest, warehouse, models and
+  reports. Train and test on the same data set; a model trained on one is refused on the other.
+  `data-info` shows what a data set holds and suggests a train / test split; `find-data` and
+  `import-data` locate recorded events elsewhere on the computer and copy them in.
 * `collect-history` backfills Pump program transactions (resumable checkpoints; failed fetches go
   to a retry queue; slot gaps are registered). `stream` records the live feed.
 * `verify-data` re-hashes every Parquet file against the manifest and reports slot gaps.
@@ -106,10 +111,17 @@ python -m pumpfun_hft.main train-model --model lightgbm --target rug
 * **Models**: logistic regression, random forest, XGBoost, LightGBM, CatBoost. Reports AUC, log
   loss, Brier score and precision in the top decile per fold; importance as model-native,
   permutation (last fold) and mean |SHAP|.
-* **Training cut-off**: every model records the end of its last label window. It refuses to
-  score any event before it, so it can never be backtested on the data it learned from. Train on
-  the older part of your data with `--end` and test on the rest with `--start` (both printed by
-  `train-model`).
+* **Complete label windows only**: a snapshot is trained on only if the data covers its whole
+  label window (`label_horizon_s`; `fwd_return_horizon_s` for `fwd_up` / `fwd_return`). Windows
+  that run past the end of the data (or of `--end`) are left out, and on real data so are windows
+  that span a market-wide silence longer than `ml.label_max_data_gap_s` (a gap between two
+  recording sessions, where "no trade seen" means "not recorded"). `train-model` prints how many
+  were left out.
+* **Training cut-off**: every model records the end of its last label window (never later than
+  the data it was trained on). It refuses to score any event before it, so it can never be
+  backtested on the data it learned from. Train on the older part of your data with `--end` and
+  test on the rest with `--start` the cut-off `train-model` prints; `data-info` suggests an
+  `--end` that trains on the first 60 % of the events.
 
 ### Deploying a model
 
@@ -118,15 +130,19 @@ Which slot a model goes in depends on its target; each slot refuses the other ki
 **`fwd_up` (or `migrate`) → the `ml_signal` strategy**, which buys when the model's probability
 is at least `min_prob`:
 
-```bash
-train-model --model lightgbm --target fwd_up --end 2026-09-20T00:00:00Z   # train on the older data
-backtest     --strategy ml_signal --start <cut-off printed above>          # out-of-sample test
-paper-replay --strategy ml_signal --start <cut-off>                        # same, through the live engine
-paper        --strategy ml_signal --minutes 120                            # live data, simulated fills
+```powershell
+hftr data-info                                                              # prints a ready --end
+hftr train-model  --model lightgbm --target fwd_up --end <from data-info>   # train on the older data
+hftr backtest     --strategy ml_signal --start <cut-off printed above>      # out-of-sample test
+hftr paper-replay --strategy ml_signal --start <cut-off>                    # same, through the live engine
+hftr paper        --strategy ml_signal --minutes 120                        # live data, simulated fills
 ```
 
-* `strategy.params.ml_signal.model_path: latest` loads the newest `*-fwd_up-*.joblib` in
-  `paths.models_dir`; set a file name to pin one model.
+(`hftr` = `python -m pumpfun_hft.main --dataset real`; use `hft` to do the same on the synthetic market.)
+
+* `strategy.params.ml_signal.model_path: latest` loads the newest `*-fwd_up-*.joblib` in the data
+  set's models folder (`paths.models_dir`); set a file name to pin one model. A model records the
+  data set it was trained on and is refused on the other one.
 * It scores each token once per training snapshot delay (`rug_model.snapshot_delays_s`), the only
   moments the model was trained on, with the same feature code that built the training rows
   (`ml.dataset.model_features`).
@@ -139,7 +155,10 @@ paper        --strategy ml_signal --minutes 120                            # liv
 * `optimize --strategy ml_signal` tunes `min_prob` and `max_rug_prob`.
 
 **`rug` → the rug scorer** used by every strategy's `max_rug_prob` gate and the overlay: set
-`rug_model.use_trained_model: true` and `rug_model.model_path` to the saved file.
+`rug_model.use_trained_model: true` and `rug_model.model_path` to the saved file's name (it is
+looked up in the data set's models folder; an absolute path also works). A configured model that
+cannot be found, or that was trained on the other data set, stops the run with an error rather
+than silently falling back to the heuristic.
 
 On the default synthetic market the rug model reaches a purged-CV AUC of about 0.82 — the
 planted serial-rugger structure is learnable. Expect lower numbers on real data.

@@ -106,6 +106,10 @@ class MlSignal(Strategy):
         if target not in TRADABLE_TARGETS:
             raise ValueError(f"ml_signal trades models of {TRADABLE_TARGETS}; {self.path} predicts {target!r}"
                              + (" (a rug model belongs in rug_model.model_path)" if target == "rug" else ""))
+        trained_on, active = bundle.get("dataset"), settings.datasets.active
+        if active and trained_on and trained_on != active:  # e.g. a synthetic-market model on real data
+            raise ValueError(f"ml_signal: {self.path} was trained on the {trained_on} data set; this run uses the {active} "
+                             f"data set. Train one on it: {'hftr' if active == 'real' else 'hft'} train-model --target fwd_up")
         unknown = [f for f in bundle["features"] if f not in MODEL_FEATURE_NAMES]
         if unknown:  # trained by a different version of the feature code: refuse rather than feed zeros
             raise ValueError(f"ml_signal: model uses features this version does not compute: {unknown[:8]}; retrain it")

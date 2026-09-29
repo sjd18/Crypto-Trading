@@ -76,6 +76,32 @@ class PathsCfg(Strict):
         return self.resolve("data_dir") / self.metadata_subdir
 
 
+#: the two data sets: ``hft`` = synthetic, ``hftr`` = real (see ``hft.ps1`` and ``--dataset``)
+DATASET_KINDS: tuple[str, ...] = ("synthetic", "real")
+
+
+class DatasetsCfg(Strict):
+    active: Literal["", "synthetic", "real"]  # set by ``--dataset``; "" = use ``paths`` exactly as configured
+    synthetic: str
+    real: str
+
+    def root(self, name: str) -> Path:
+        """Folder of data set ``name`` (relative paths are anchored at the project root)."""
+        p = Path(getattr(self, name))
+        return p if p.is_absolute() else PROJECT_ROOT / p
+
+
+def dataset_path_overrides(root: str | Path) -> dict[str, str]:
+    """Dotted overrides that put everything made from a data set inside its folder ``root``:
+    events, token metadata, the SQLite manifest / checkpoints / live state, the DuckDB warehouse,
+    trained models and reports. Two data sets therefore never share a file."""
+    r = Path(root)
+    r = r if r.is_absolute() else PROJECT_ROOT / r
+    return {"paths.data_dir": str(r), "paths.sqlite_file": str(r / "meta.sqlite"),
+            "paths.duckdb_file": str(r / "warehouse.duckdb"), "paths.models_dir": str(r / "models"),
+            "paths.reports_dir": str(r / "reports")}
+
+
 # ----------------------------------------------------------------------------- network
 class RateLimitCfg(Strict):
     rps: float
@@ -662,6 +688,7 @@ class MlCfg(Strict):
     target: Literal["rug", "fwd_return", "migrate"]
     fwd_return_horizon_s: float
     fwd_return_threshold: float
+    label_max_data_gap_s: float
     cv_folds: int
     embargo_s: float
     shap_samples: int
@@ -674,6 +701,7 @@ class Settings(Strict):
 
     app: AppCfg
     paths: PathsCfg
+    datasets: DatasetsCfg
     network: NetworkCfg
     protocol: ProtocolCfg
     fees: FeesCfg

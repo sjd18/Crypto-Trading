@@ -107,7 +107,7 @@ class BacktestEngine:
         self.creators = CreatorBook(s.discovery)
         self.resolver = OutcomeResolver(s.discovery, self.creators, self.wallets)
         self.discovery = TokenDiscoveryEngine(s, self.market, self.creators)
-        self.rug = rug_scorer if rug_scorer is not None else build_rug_scorer(s.rug_model)
+        self.rug = rug_scorer if rug_scorer is not None else build_rug_scorer(s.rug_model, s.paths.resolve("models_dir"), s.datasets.active)
         self.portfolio = Portfolio(int(s.backtest.initial_capital_sol * LAMPORTS_PER_SOL), s.fees.close_token_account_on_exit)
         self.risk = RiskEngine(s.risk, self.portfolio, int(s.backtest.min_order_sol * LAMPORTS_PER_SOL))
         self.risk.breakers.verbose = False  # simulated trips are recorded in the diagnostics, not logged

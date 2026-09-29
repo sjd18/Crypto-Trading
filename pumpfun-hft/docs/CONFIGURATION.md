@@ -22,6 +22,7 @@ Units follow the key suffix: `*_sol` in SOL, `*_lamports` in lamports, `*_bps` i
 |---|---|
 | `app` | `mode` (`paper` / `live`), global `seed` |
 | `paths` | data, events, metadata, DuckDB, SQLite, logs, reports, models, IDLs (relative to the project root) |
+| `datasets` | folders of the `synthetic` and `real` data sets; `--dataset NAME` (or `active: NAME`) points data, events, metadata, DuckDB, SQLite, models and reports into that folder (`hft` / `hftr` in `hft.ps1`) |
 | `network.metis` | Mode A / B, public URL and its sunset date, public platform fee, timeouts, rate limit, urgency → `priorityFeeLevel` |
 | `network.rpc`, `network.ws` | timeouts, rate limits, commitment, batch size, reconnect back-off, queue size |
 | `network.pumpfun_frontend` | optional unofficial pump.fun API (off by default) |
@@ -39,7 +40,7 @@ Units follow the key suffix: `*_sol` in SOL, `*_lamports` in lamports, `*_bps` i
 | `features` | window lengths, EWMA half-lives, bar size, whale / aggressive thresholds, fresh-wallet window, smart threshold |
 | `discovery` | outcome horizon and definitions (success multiple, rug liquidity drawdown, creator sell share), creator priors and score weights, metadata fetching |
 | `wallet_intel` | ranking minimums, prior strength, sniper / whale / market-maker / bot / insider / rug-wallet rules |
-| `rug_model` | trained model switch and path, label horizon and drawdown, snapshot delays, heuristic weights |
+| `rug_model` | trained model switch and path (a file name in the data set's models folder, or absolute; a missing file is an error), label horizon and drawdown, snapshot delays, heuristic weights |
 | `strategy` | active strategies, exit overlay, cost-gate multiple, one-order-in-flight, re-entry cooldown, per-strategy `params` |
 | `optimizer` | method, trials, objective, constraints, workers, selection rule, splits, walk-forward, per-method settings, search `spaces` |
 | `montecarlo` | simulations, resampling method, perturbation sigmas, latency cost, ruin level, path-level settings |
@@ -48,7 +49,7 @@ Units follow the key suffix: `*_sol` in SOL, `*_lamports` in lamports, `*_bps` i
 | `logging` | level, rotation, console, channels |
 | `dashboard` | host, port, live refresh, table size |
 | `synthetic` | the synthetic market generator (tests / demos only) |
-| `ml` | model, target, horizons, CV folds, embargo, SHAP / permutation settings, per-model hyper-parameters |
+| `ml` | model, target, horizons, the longest market-wide silence treated as data rather than a recording gap (real data), CV folds, embargo, SHAP / permutation settings, per-model hyper-parameters |
 
 ## Parameters worth reviewing before any real use
 
