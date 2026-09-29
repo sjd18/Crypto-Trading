@@ -240,12 +240,36 @@ def verify_data(gap_slots: int = typer.Option(None, help="Report slot gaps wider
 
 
 # ============================================================================ research
+def _ml_cutoff_notice(names: list[str], events: pl.DataFrame) -> None:
+    """ml_signal never trades before its model's training cut-off: say so when the data starts earlier."""
+    if "ml_signal" not in names:
+        return
+    from pumpfun_hft.strategies.base import build_strategy
+
+    strat: Any = build_strategy("ml_signal", S())  # fails here, with a clear message, if there is no model
+    t0, t1 = int(events["ts_ms"].min()), int(events["ts_ms"].max())
+    console.print(f"ml_signal model: {strat.path.name} (cut-off {ms_to_iso(strat.train_end_ms)})")
+    if strat.train_end_ms >= t1:
+        console.print("[yellow]All of the selected data is before the model's training cut-off: ml_signal will not trade. "
+                      "Train on older data (train-model --end ...) and test on the rest.[/]")
+    elif strat.train_end_ms > t0:
+        console.print(f"[yellow]ml_signal trades only after {ms_to_iso(strat.train_end_ms)}; "
+                      f"use --start {ms_to_iso(strat.train_end_ms)} for a clean out-of-sample window.[/]")
+
+
+def _ml_funnel(runtime: Any) -> None:
+    strat = getattr(runtime, "by_name", {}).get("ml_signal")
+    if strat is not None:
+        console.print(f"ml_signal: {strat.funnel()}")
+
+
 def _run_backtest(strategies: list[str], start: str | None, end: str | None, seed: int | None, run_id: str | None = None) -> Any:
     from pumpfun_hft.backtester.engine import BacktestEngine
     from pumpfun_hft.backtester.replay import DataSource, load_metadata
 
     s = S()
     events = _load_events(start, end)
+    _ml_cutoff_notice(strategies or list(s.strategy.active), events)
     meta = load_metadata(_metadata_path())
     eng = BacktestEngine(s, DataSource(frame=events), strategies or None, metadata=meta, seed=seed, run_id=run_id,
                          synthetic=_is_synthetic())
@@ -308,6 +332,7 @@ def backtest(strategy: list[str] = typer.Option(None, "--strategy", help="Strate
     eng, res = _run_backtest(list(strategy or []), start, end, seed)
     d = _save_run(eng, res)
     _print_metrics(res.metrics, f"{res.run_id} ({', '.join(res.strategies)})")
+    _ml_funnel(eng.runtime)
     console.print(f"{res.n_events:,} events in {res.elapsed_s:.1f}s ({res.events_per_second:,.0f}/s) · saved to {d}")
     if res.synthetic:
         console.print("[yellow]Synthetic data: these numbers exercise the pipeline and say nothing about live profitability.[/]")
@@ -400,7 +425,10 @@ def report(run: str = typer.Option(None), formats: str = typer.Option("html,pdf,
 
 @app.command("train-model")
 def train_model(model: str = typer.Option(None, help="logistic | random_forest | xgboost | lightgbm | catboost"),
-                target: str = typer.Option(None, help="rug | fwd_up | migrate"), save: bool = typer.Option(True)) -> None:
+                target: str = typer.Option(None, help="rug | fwd_up | migrate"),
+                start: str = typer.Option(None, help="ISO start (UTC) of the training data"),
+                end: str = typer.Option(None, help="ISO end (UTC) of the training data; test on data after it"),
+                save: bool = typer.Option(True)) -> None:
     """Build a point-in-time dataset, run purged CV, report importance/SHAP and save the model."""
     from pumpfun_hft.backtester.replay import load_metadata
     from pumpfun_hft.ml.dataset import build_snapshot_dataset, feature_columns
@@ -409,7 +437,11 @@ def train_model(model: str = typer.Option(None, help="logistic | random_forest |
     s = S()
     ml = s.ml.model_copy(update={"model": model}) if model else s.ml
     tgt = target or ("fwd_up" if s.ml.target == "fwd_return" else s.ml.target)
-    ds = build_snapshot_dataset(s, _load_events(None, None), load_metadata(_metadata_path()))
+    events = _load_events(start, end)
+    ds = build_snapshot_dataset(s, events, load_metadata(_metadata_path()))
+    if ds.is_empty():
+        console.print("[yellow]No snapshots: the selected data has no tokens old enough to snapshot.[/]")
+        raise typer.Exit(1)
     rep = train_and_evaluate(ds, feature_columns(ds), tgt, ml, s.app.seed)
     console.print(f"{rep.kind} → {tgt}: rows {rep.n_rows:,}, base rate {rep.base_rate:.3f}, CV mean {json.dumps(rep.mean)}")
     console.print(rep.importance.head(15))
@@ -419,8 +451,24 @@ def train_model(model: str = typer.Option(None, help="logistic | random_forest |
         out.mkdir(parents=True, exist_ok=True)
         rep.importance.write_parquet(out / "importance.parquet")
         (out / "cv.json").write_text(jsonutil.dumps({"folds": rep.folds, "mean": rep.mean, "train_end_ms": rep.train_end_ms}))
+        # the label definition travels with the model, so ml_signal scores and exits on the same terms
+        rep.bundle.update({"snapshot_delays_s": list(s.rug_model.snapshot_delays_s), "label_horizon_s": s.rug_model.label_horizon_s,
+                           "fwd_return_horizon_s": s.ml.fwd_return_horizon_s, "fwd_return_threshold": s.ml.fwd_return_threshold,
+                           "data_start_ms": int(events["ts_ms"].min()), "data_end_ms": int(events["ts_ms"].max())})
         path = rep.save(s.paths.resolve("models_dir") / f"{mid}.joblib")
-        console.print(f"saved model {path} (trained through {ms_to_iso(rep.train_end_ms)}; set rug_model.model_path to use it)")
+        cut = ms_to_iso(rep.train_end_ms)
+        console.print(f"saved model {path}")
+        console.print(f"training cut-off {cut}: the model will not trade any event before it.")
+        if tgt == "rug":
+            console.print("use it: set rug_model.use_trained_model: true and rug_model.model_path to that file")
+        else:
+            console.print(f"use it: backtest --strategy ml_signal --start {cut}   (ml_signal loads the newest fwd_up model)")
+            store_end = _store().read()["ts_ms"].max() if end else int(events["ts_ms"].max())
+            t0 = int(events["ts_ms"].min())
+            if rep.train_end_ms >= t0 + 0.9 * (int(store_end) - t0):
+                console.print("[yellow]Almost none of your stored data is after the cut-off, so there is nothing left to "
+                              "test it on. Retrain on the older part with --end (e.g. the first 60 %), backtest the rest "
+                              "with --start, or paper trade it on new live data.[/]")
 
 
 @app.command()
@@ -580,6 +628,7 @@ def _run_trader(paper: bool, strategies: list[str], minutes: float, flatten_on_e
         asyncio.run(run())
     except KeyboardInterrupt:
         console.print("stopped")
+    _ml_funnel(trader.runtime)
 
 
 @app.command()
@@ -628,7 +677,10 @@ def paper_replay(strategy: list[str] = typer.Option(None, "--strategy"),
             nxt[0] = next(marks, 101)
 
     names = list(strategy or []) or None
+    _ml_cutoff_notice(names or list(s.strategy.active), events)
     rep = replay_live(s, events, metadata, names, meta=_meta(), realtime=realtime, progress=progress)
+    if rep.ml_funnel:
+        console.print(f"ml_signal (live engine): {rep.ml_funnel}")
     t = Table(title=f"Live engine replay: {rep.events:,} events in {rep.wall_s:.1f} s")
     t.add_column("metric")
     t.add_column("live engine (paper)", justify="right")

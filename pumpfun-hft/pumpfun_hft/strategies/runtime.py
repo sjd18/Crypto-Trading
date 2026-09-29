@@ -41,7 +41,8 @@ from pumpfun_hft.core.types import (
     Urgency,
 )
 from pumpfun_hft.features.market import TokenState
-from pumpfun_hft.ml.rug_model import rug_features
+from pumpfun_hft.ml.dataset import model_features
+from pumpfun_hft.ml.rug_model import TrainedRugModel, rug_features
 from pumpfun_hft.strategies.base import Strategy, StrategyContext
 from pumpfun_hft.utils.logging import get_logger
 
@@ -113,6 +114,10 @@ class StrategyRuntime:
     def rug_probability(self, ctx: StrategyContext) -> float:
         x = rug_features(ctx.f, ctx.token, ctx.creator_score)
         try:
+            if isinstance(self.rug_scorer, TrainedRugModel):
+                # a trained model learned from the full training row (online features + rug_* columns),
+                # not just the raw rug features the heuristic uses
+                return float(self.rug_scorer.predict({**x, **model_features(ctx.f, ctx.token, ctx.creator_score)}, ctx.now_ms))
             return float(self.rug_scorer.predict(x, ctx.now_ms))
         except Exception:  # noqa: BLE001 - e.g. LookAheadError from a model trained after `now`
             self.counts["rug_model_unavailable"] += 1

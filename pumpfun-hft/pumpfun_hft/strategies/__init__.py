@@ -18,6 +18,7 @@ Architecture
     rug_avoidance.py        exit before rug signatures (overlay) and veto risky entries
     migration.py            trade curve completion and migration to PumpSwap
     sniper.py               enter in the first seconds after launch
+    ml_signal.py            trade a model trained with train-model (fwd_up / migrate)
 
 Data flow
     Event -> MarketState / FeatureEngine -> StrategyContext -> Strategy.generate_signal
@@ -40,6 +41,7 @@ from pumpfun_hft.strategies import (  # noqa: F401  (registration side effects)
     liquidity_sweep,
     mean_reversion,
     migration,
+    ml_signal,
     momentum_ignition,
     rug_avoidance,
     smart_money,
