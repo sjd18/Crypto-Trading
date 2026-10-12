@@ -84,6 +84,32 @@ Without `--dataset`, commands use `paths` from the config exactly as written (th
 above), and the same guards still stop `synth` from deleting recorded events and the recorders
 from writing into a synthetic market.
 
+### Four ways to trade
+
+Each trading mode is a **profile** (global option `--profile`, and a function in `hft.ps1`) with
+one `trade` command. The profile picks the data set and where the events and fills come from:
+
+| Profile | Trading | Events from | Fills | Data set |
+|---|---|---|---|---|
+| `hft` | paper | the synthetic market | simulated | synthetic |
+| `hftr` | paper | real recorded (downloaded) events | simulated | real |
+| `hfts` | paper | the live stream (also recorded into the real data set) | simulated | real |
+| `hftl` | **live** | the live stream | **real transactions** | real |
+
+```powershell
+hft  trade --strategy smart_money                     # 1. paper, synthetic market
+hftr trade --strategy smart_money --hours 6           # 2. paper, recorded events (--start / --end / --realtime / --no-compare)
+hfts trade --strategy smart_money --minutes 120       # 3. paper, live stream (no wallet needed)
+hftl --set app.mode=live trade --confirm-live --minutes 30   # 4. LIVE, real money: read docs/LIVE_TRADING.md first
+```
+
+`hft trade` and `hftr trade` run stored events through the live engine on virtual time
+(`paper-replay`); `hfts trade` is `paper` and `hftl trade` is `live`, so `hftl` keeps both
+interlocks: `app.mode: live` in the config (or `--set`) **and** `--confirm-live`. Options of
+another mode are refused (e.g. `--minutes` on `hftr`, `--confirm-live` on `hfts`). Since
+PowerShell command names ignore case, live trading is `hftl`, not `HFTS`. Without `hft.ps1`:
+`python -m pumpfun_hft.main --profile hfts trade --minutes 120`.
+
 ## Commands
 
 | Command | What it does |
@@ -99,9 +125,11 @@ from writing into a synthetic market.
 | `dashboard`, `dashboard-export` | Local dashboard server; static single-file export |
 | `paper-replay` | Recorded events through the live engine (paper gateway) on virtual time, compared with a backtest of the same events |
 | `paper`, `live` | Paper trading on the live stream; live trading (requires `app.mode: live` **and** `--confirm-live`) |
+| `trade` | Trade in the mode of the `--profile`: `hft` / `hftr` = `paper-replay`, `hfts` = `paper`, `hftl` = `live` |
 | `latency-probe`, `update-idl`, `docs` | Measure RPC / Metis latency; refresh IDLs; regenerate `docs/MODULES.md` |
 
-Global options: `--dataset synthetic|real` and `--data-root <folder>` (see above), `--config my.yaml`
+Global options: `--dataset synthetic|real` and `--data-root <folder>` (see above), `--profile hft|hftr|hfts|hftl`
+(trading mode, see above), `--config my.yaml`
 (deep-merged over `configs/default.yaml`) and repeatable `--set dotted.key=value` overrides, e.g.
 `--set backtest.initial_capital_sol=5`.
 

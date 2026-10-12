@@ -55,8 +55,8 @@ was in flight.
 
 ## Safety interlocks
 
-1. `live` refuses to start unless `app.mode: live` is set in the config **and** `--confirm-live`
-   is passed on the command line.
+1. `live` (and `hftl trade`, which runs it) refuses to start unless `app.mode: live` is set in the
+   config **and** `--confirm-live` is passed on the command line.
 2. The risk engine (loss limits, exposure limits, per-token order rate) and all circuit breakers
    run exactly as in the backtest; RPC latency and slot-time breakers are fed from live
    measurements.
@@ -91,6 +91,15 @@ python -m pumpfun_hft.main dashboard               # Live monitor page follows t
 
 # only after reviewing the code and the paper results:
 python -m pumpfun_hft.main --set app.mode=live --set sizing.fixed_sol=0.02 live --confirm-live --minutes 30
+```
+
+The same steps with the trading profiles of `hft.ps1` (see the README, "Four ways to trade"):
+
+```powershell
+hft  trade                                  # 1. paper on the synthetic market (offline)
+hftr trade                                  # 2. paper on recorded events (offline, = paper-replay)
+hfts trade --minutes 120                    # 3. paper on the live stream (= paper)
+hftl --set app.mode=live --set sizing.fixed_sol=0.02 trade --confirm-live --minutes 30   # 4. live (= live)
 ```
 
 Operational notes:

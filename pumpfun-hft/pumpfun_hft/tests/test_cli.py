@@ -131,6 +131,44 @@ def test_paper_replay_runs_the_live_engine_offline(home: Path, workflow: Path) -
     assert "open positions at end" in out
 
 
+def test_hft_trade_paper_trades_the_stored_synthetic_market(home: Path, workflow: Path) -> None:
+    out = invoke(home, "--profile", "hft", "--data-root", str(home / "data"), "trade", "--strategy", "momentum_ignition",
+                 "--no-compare").output
+    assert "hft · data set: synthetic" in out and "paper trading on the stored events" in out
+    assert "Live engine replay" in out and "live engine (paper)" in out and "Synthetic market" in out
+
+
+# --------------------------------------------------------------------------- trading profiles
+def test_profile_picks_its_data_set_and_rejects_another() -> None:
+    from pumpfun_hft.main import TRADING_PROFILES
+
+    assert {p: d for p, (d, _) in TRADING_PROFILES.items()} == {"hft": "synthetic", "hftr": "real", "hfts": "real", "hftl": "real"}
+    res = runner.invoke(app, ["--profile", "hfts", "--dataset", "synthetic", "check-config"])
+    assert res.exit_code == 2 and "runs on the real data set" in res.output
+    assert runner.invoke(app, ["--profile", "HFTS", "check-config"]).exit_code == 2  # names are lower case only
+
+
+@pytest.mark.parametrize("profile, args, message", [
+    ("hft", ["--minutes", "5"], "only apply to trading the live stream"),
+    ("hftr", ["--confirm-live"], "only apply to trading the live stream"),
+    ("hfts", ["--hours", "2"], "only apply to trading stored events"),
+    ("hftl", ["--no-compare"], "only apply to trading stored events"),
+    ("hfts", ["--confirm-live"], "hfts paper trades"),
+])
+def test_trade_rejects_options_of_another_mode(tmp_path: Path, profile: str, args: list[str], message: str) -> None:
+    res = runner.invoke(app, cli_args(tmp_path, "--profile", profile, "--data-root", str(tmp_path / "data"), "trade", *args))
+    assert res.exit_code == 2 and message in " ".join(res.output.split())
+
+
+def test_hftl_trade_requires_config_and_flag(tmp_path: Path) -> None:
+    for extra in ([], ["--confirm-live"]):  # app.mode is "paper" by default
+        res = runner.invoke(app, cli_args(tmp_path, "--profile", "hftl", "--data-root", str(tmp_path / "data"), "trade", *extra))
+        assert res.exit_code == 2 and "Refusing to trade live" in res.output and "hftl --set app.mode=live" in res.output
+    res = runner.invoke(app, cli_args(tmp_path, "--set", "app.mode=live", "--profile", "hftl", "--data-root", str(tmp_path / "data"),
+                                      "trade"))
+    assert res.exit_code == 2 and "Refusing to trade live" in res.output
+
+
 def test_empty_store_is_reported(tmp_path: Path) -> None:
     res = runner.invoke(app, cli_args(tmp_path, "backtest", "--no-report"))
     assert res.exit_code == 1 and "event store is empty" in res.output

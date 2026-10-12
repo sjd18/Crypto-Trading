@@ -1,12 +1,21 @@
 # hft.ps1 - PowerShell helper for pumpfun-hft on Windows.
 #
 #   hft   <command>   runs on the SYNTHETIC data set: the fake market made by `hft synth`
-#   hftr  <command>   runs on the REAL data set: Pump.fun events recorded by `hftr stream` / `hftr paper`
+#   hftr  <command>   runs on the REAL data set: Pump.fun events recorded by `hftr stream` / `hfts trade`
+#   hfts  <command>   the REAL data set, trading the LIVE STREAM with simulated (paper) fills
+#   hftl  <command>   the REAL data set, trading the LIVE STREAM with REAL MONEY
+#
+# The four ways to trade (each one's `trade` command):
+#   hft  trade        paper trading on the synthetic market
+#   hftr trade        paper trading on real recorded (downloaded) events
+#   hfts trade        paper trading on the live stream (the stream is recorded into the real data set)
+#   hftl trade        live trading on the live stream; also needs app.mode: live and --confirm-live
+# (hfts / hftl rather than hfts / HFTS: PowerShell command names ignore case.)
 #
 # Each data set is one folder that holds everything made from it: its events, the SQLite manifest,
 # the DuckDB warehouse, trained models and backtest reports. The two never mix: a model trained with
 # hftr is only used by hftr, `synth` refuses to touch recorded events, and the recording commands
-# (stream, paper, live, collect-history) only run with hftr.
+# (stream, paper, live, collect-history, and `trade` of hfts / hftl) only run on the real data set.
 #
 # Load it in the current PowerShell window:
 #     . "C:\Users\sjd18\OneDrive\Documents\GitHub\Crypto-Trading\pumpfun-hft\hft.ps1"
@@ -20,43 +29,68 @@
 $env:HFT_PYTHON    = 'C:\pumpfun\venv\Scripts\python.exe'   # python.exe of the virtual environment
 $env:HFT_CONFIG    = 'C:\pumpfun\local.yaml'                # optional settings for both (skipped if missing)
 $env:HFT_SYNTH_DIR = 'C:\pumpfun\data'                      # hft  -> synthetic data set folder
-$env:HFT_REAL_DIR  = 'C:\pumpfun\real'                      # hftr -> real (recorded) data set folder
+$env:HFT_REAL_DIR  = 'C:\pumpfun\real'                      # hftr / hfts / hftl -> real (recorded) data set folder
 # --------------------------------------------------------------------------------------------------
 
 $global:HftScriptPath = $PSCommandPath
 
 function Invoke-PumpfunHft {
-    param([string]$Dataset, [string]$Folder, [object[]]$Rest)
+    param([string]$TradingProfile, [string]$Dataset, [string]$Folder, [object[]]$Rest)
     if (-not (Test-Path $env:HFT_PYTHON)) {
         Write-Error "Python not found at $env:HFT_PYTHON. Create the venv or edit HFT_PYTHON at the top of hft.ps1."
         return
     }
     $cfg = @()
     if ($env:HFT_CONFIG -and (Test-Path $env:HFT_CONFIG)) { $cfg = @('--config', $env:HFT_CONFIG) }
-    & $env:HFT_PYTHON -m pumpfun_hft.main @cfg --dataset $Dataset --data-root $Folder @Rest
+    & $env:HFT_PYTHON -m pumpfun_hft.main @cfg --profile $TradingProfile --dataset $Dataset --data-root $Folder @Rest
 }
 
 function hft {
     <#
     .SYNOPSIS
-        pumpfun-hft on the SYNTHETIC data set (folder $env:HFT_SYNTH_DIR).
+        pumpfun-hft on the SYNTHETIC data set (folder $env:HFT_SYNTH_DIR). `hft trade` paper trades the synthetic market.
     .EXAMPLE
         hft synth --hours 24
         hft backtest --strategy smart_money
+        hft trade --strategy smart_money
     #>
-    Invoke-PumpfunHft -Dataset 'synthetic' -Folder $env:HFT_SYNTH_DIR -Rest $args
+    Invoke-PumpfunHft -TradingProfile 'hft' -Dataset 'synthetic' -Folder $env:HFT_SYNTH_DIR -Rest $args
 }
 
 function hftr {
     <#
     .SYNOPSIS
         pumpfun-hft on the REAL data set (folder $env:HFT_REAL_DIR): recorded Pump.fun events.
+        `hftr trade` paper trades the recorded events.
     .EXAMPLE
         hftr stream --minutes 60
         hftr data-info
         hftr backtest --strategy smart_money
+        hftr trade --strategy smart_money --hours 6
     #>
-    Invoke-PumpfunHft -Dataset 'real' -Folder $env:HFT_REAL_DIR -Rest $args
+    Invoke-PumpfunHft -TradingProfile 'hftr' -Dataset 'real' -Folder $env:HFT_REAL_DIR -Rest $args
+}
+
+function hfts {
+    <#
+    .SYNOPSIS
+        Paper trading on the LIVE STREAM (simulated fills, no wallet). Runs on the real data set
+        (folder $env:HFT_REAL_DIR), so the streamed events are recorded there for hftr.
+    .EXAMPLE
+        hfts trade --strategy momentum_ignition --minutes 120
+    #>
+    Invoke-PumpfunHft -TradingProfile 'hfts' -Dataset 'real' -Folder $env:HFT_REAL_DIR -Rest $args
+}
+
+function hftl {
+    <#
+    .SYNOPSIS
+        LIVE trading on the live stream with REAL MONEY. Runs on the real data set (folder $env:HFT_REAL_DIR).
+        Read docs\LIVE_TRADING.md first; needs app.mode: live AND --confirm-live.
+    .EXAMPLE
+        hftl --set app.mode=live trade --confirm-live --minutes 30
+    #>
+    Invoke-PumpfunHft -TradingProfile 'hftl' -Dataset 'real' -Folder $env:HFT_REAL_DIR -Rest $args
 }
 
 function hft-install-profile {
@@ -77,7 +111,7 @@ function hft-install-profile {
     }
     foreach ($p in @($PROFILE.CurrentUserCurrentHost, $PROFILE.CurrentUserAllHosts)) {
         if ($p -and (Test-Path $p)) {
-            foreach ($h in (Select-String -Path $p -Pattern '^\s*function\s+hftr?\b')) {
+            foreach ($h in (Select-String -Path $p -Pattern '^\s*function\s+hft[rsl]?\b')) {
                 Write-Warning ("{0} line {1} defines its own '{2}'. Delete that line so the hft.ps1 version is used." -f $h.Path, $h.LineNumber, $h.Line.Trim())
             }
         }
@@ -94,7 +128,7 @@ function hft-doctor {
     else { Write-Warning "python   $env:HFT_PYTHON  NOT FOUND - edit HFT_PYTHON at the top of hft.ps1"; return }
     if ($env:HFT_CONFIG -and (Test-Path $env:HFT_CONFIG)) { Write-Host "config   $env:HFT_CONFIG" }
     else { Write-Host "config   (none: built-in defaults)" }
-    foreach ($name in @('hft', 'hftr')) {
+    foreach ($name in @('hft', 'hftr', 'hfts', 'hftl')) {
         $cmd = Get-Command $name -CommandType Function -ErrorAction SilentlyContinue
         if (-not $cmd -or $cmd.Definition -notmatch 'Invoke-PumpfunHft') {
             Write-Warning "'$name' is not the hft.ps1 version (another definition, e.g. in your `$PROFILE, replaced it). Remove that definition."
@@ -114,7 +148,19 @@ pumpfun-hft - command cheat sheet          (full docs: docs\ in this repo)
 
   hft  <command>   SYNTHETIC data set   folder: $env:HFT_SYNTH_DIR
   hftr <command>   REAL data set        folder: $env:HFT_REAL_DIR   (recorded Pump.fun events)
-  Every command below works with either; each data set has its own events, models and reports.
+  hfts <command>   REAL data set, trades the LIVE STREAM on paper   (same folder as hftr)
+  hftl <command>   REAL data set, trades the LIVE STREAM with REAL MONEY   (same folder as hftr)
+  Every command below works with hft or hftr; each data set has its own events, models and reports.
+
+TRADING - four modes, one `trade` command each
+  hft  trade --strategy smart_money           1. paper trading on the synthetic market
+  hftr trade --strategy smart_money           2. paper trading on real recorded (downloaded) events
+  hftr trade --hours 6 --no-compare              only the first 6 h, without the backtest comparison
+  hftr trade --start <ISO> --end <ISO>           a time window; --realtime paces it at 1x
+  hfts trade --strategy smart_money --minutes 120   3. paper trading on the live stream (no wallet)
+  hftl --set app.mode=live trade --confirm-live --minutes 30   4. LIVE trading, real money
+      Read docs\LIVE_TRADING.md first. hftl needs app.mode: live (config or --set) AND --confirm-live.
+      hfts / hftl record the stream into the real data set, so hftr can backtest it later.
 
 SETUP AND DATA
   hft-doctor                                  check paths; what each data set holds
@@ -160,8 +206,8 @@ MACHINE LEARNING  (train and test on the same data set)
   hftr data-info                              prints a ready --end (first 60 % of the events)
   hftr train-model --model lightgbm --target fwd_up --end <from data-info>
   hftr backtest --strategy ml_signal --start <training cut-off printed by train-model>
-  hftr paper-replay --strategy ml_signal --start <cut-off>     same test, through the live engine
-  hftr paper --strategy ml_signal --minutes 120                live data, simulated fills
+  hftr trade --strategy ml_signal --start <cut-off>            same test, through the live engine
+  hfts trade --strategy ml_signal --minutes 120                live data, simulated fills
   hftr --set strategy.params.ml_signal.top_frac=0.02 backtest --strategy ml_signal --start <cut-off>
       top_frac: share of the highest model scores to buy (train-model prints a table to choose it)
       --model: logistic | random_forest | xgboost | lightgbm | catboost
@@ -175,13 +221,8 @@ LOOKING AT RESULTS
   hftr wallets --top 25                       top-ranked wallets of the latest run
   hftr query "select kind, count(*) n from events group by 1 order by n desc"
 
-PAPER TRADING
-  hftr paper-replay --strategy smart_money    offline rehearsal on stored events
-  hftr paper-replay --hours 3 --no-compare    shorter, without the backtest comparison
-  hftr paper --strategy momentum_ignition --minutes 120        live data, simulated fills
-
-LIVE TRADING - real money. Read docs\LIVE_TRADING.md first.
-  hftr --set app.mode=live live --confirm-live --minutes 30    both flags are required
+  (the older commands still work: hftr paper-replay = hftr trade, hftr paper = hfts trade,
+   hftr live = hftl trade)
 
 GLOBAL OPTIONS  (put them before the command)
   hftr --set sizing.fixed_sol=0.05 backtest   override any config key
@@ -189,4 +230,4 @@ GLOBAL OPTIONS  (put them before the command)
 '@.Replace('$env:HFT_SYNTH_DIR', $env:HFT_SYNTH_DIR).Replace('$env:HFT_REAL_DIR', $env:HFT_REAL_DIR) | Write-Host
 }
 
-Write-Host "pumpfun-hft loaded: hft = synthetic data ($env:HFT_SYNTH_DIR), hftr = real data ($env:HFT_REAL_DIR). 'hft-help' lists the commands." -ForegroundColor Green
+Write-Host "pumpfun-hft loaded: hft = synthetic data ($env:HFT_SYNTH_DIR), hftr = real data ($env:HFT_REAL_DIR), hfts = paper on the live stream, hftl = LIVE trading. 'hft-help' lists the commands." -ForegroundColor Green

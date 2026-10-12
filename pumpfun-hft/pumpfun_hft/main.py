@@ -3,6 +3,8 @@
 Usage: ``python -m pumpfun_hft.main [--config my.yaml] [--set key=value ...] COMMAND [options]``
 
 Data sets:  --dataset synthetic | real (hft.ps1: hft / hftr) · data-info · find-data · import-data
+Trading:    --profile hft | hftr | hfts | hftl, then ``trade``: paper on the synthetic market, paper on
+            recorded events, paper on the live stream, live (real money) on the live stream
 Research:   synth · collect-history · verify-data · backtest · optimize · walkforward · montecarlo ·
             report · train-model · wallets · query
 Live:       stream · paper · paper-replay · live (requires app.mode=live AND --confirm-live) · latency-probe
@@ -50,6 +52,17 @@ def _parse_sets(sets: list[str]) -> dict[str, Any]:
 #: commands that do not read or write a data set (no data-set check, no banner)
 NO_DATASET_COMMANDS = frozenset({"check-config", "docs", "update-idl", "latency-probe", "find-data", "data-info", "import-data"})
 
+#: trading profiles (the hft.ps1 function names): profile -> (data set, what `trade` does)
+#:   replay       stored events through the live engine with simulated fills (paper-replay)
+#:   stream-paper the live stream, recorded into the real data set, with simulated fills (paper)
+#:   stream-live  the live stream with real transactions (live; app.mode=live AND --confirm-live)
+TRADING_PROFILES: dict[str, tuple[str, str]] = {
+    "hft": ("synthetic", "replay"),
+    "hftr": ("real", "replay"),
+    "hfts": ("real", "stream-paper"),
+    "hftl": ("real", "stream-live"),
+}
+
 
 @app.callback()
 def main(ctx: typer.Context,
@@ -58,9 +71,17 @@ def main(ctx: typer.Context,
          dataset: str = typer.Option(None, "--dataset", "-d",
                                      help="synthetic | real: run on that data set, whose folder holds its events, models and "
                                           "reports (hft.ps1: hft = synthetic, hftr = real)"),
-         data_root: Path = typer.Option(None, "--data-root", help="Folder of the --dataset (default: datasets.<name> in the config)")) -> None:
+         data_root: Path = typer.Option(None, "--data-root", help="Folder of the --dataset (default: datasets.<name> in the config)"),
+         profile: str = typer.Option(None, "--profile", "-p",
+                                     help="hft | hftr | hfts | hftl: trading profile; sets the data set and what `trade` does "
+                                          "(paper on synthetic / recorded events, paper / live on the live stream)")) -> None:
     overrides = _parse_sets(set_)
-    name = dataset or load_settings(config, overrides).datasets.active  # a config file may also set datasets.active
+    if profile is not None and profile not in TRADING_PROFILES:
+        raise typer.BadParameter(f"--profile must be one of {', '.join(TRADING_PROFILES)}, got {profile!r}")
+    if profile and dataset and dataset != TRADING_PROFILES[profile][0]:
+        raise typer.BadParameter(f"--profile {profile} runs on the {TRADING_PROFILES[profile][0]} data set, not --dataset {dataset}")
+    STATE["profile"] = profile
+    name = dataset or (TRADING_PROFILES[profile][0] if profile else None) or load_settings(config, overrides).datasets.active
     if name and name not in DATASET_KINDS:
         raise typer.BadParameter(f"--dataset must be one of {', '.join(DATASET_KINDS)}, got {name!r}")
     if data_root is not None and not name:
@@ -83,6 +104,9 @@ def S() -> Settings:
 
 def _cli(kind: str | None = None) -> str:
     """How the user runs commands on a data set (the hft.ps1 function names)."""
+    profile = STATE.get("profile")
+    if profile and (kind is None or kind == TRADING_PROFILES[profile][0]):
+        return profile
     kind = kind if kind is not None else S().datasets.active
     return {"synthetic": "hft", "real": "hftr"}.get(kind, "python -m pumpfun_hft.main")
 
@@ -104,7 +128,7 @@ def _check_dataset() -> None:
 
     name, root = S().datasets.active, _data_root()
     on_disk = _kind_on_disk()
-    console.print(f"[dim]data set: {name} · {escape(str(root))}[/]")
+    console.print(f"[dim]{STATE['profile'] + ' · ' if STATE.get('profile') else ''}data set: {name} · {escape(str(root))}[/]")
     if on_disk == "empty":
         return
     if on_disk != name:
@@ -1014,6 +1038,9 @@ def live(strategy: list[str] = typer.Option(None, "--strategy"), minutes: float 
     """LIVE trading with real funds. Requires app.mode=live in config AND --confirm-live."""
     if S().app.mode != "live" or not confirm_live:
         console.print("[red]Refusing to trade live: set app.mode: live in your config and pass --confirm-live.[/]")
+        if STATE.get("profile") == "hftl":
+            console.print("e.g. `hftl --set app.mode=live trade --confirm-live --minutes 30` "
+                          "(or app.mode: live in the HFT_CONFIG file)")
         raise typer.Exit(2)
     _require_real_store("live")
     console.print("[bold red]LIVE TRADING — real transactions will be signed and sent.[/]")
@@ -1085,6 +1112,51 @@ def paper_replay(strategy: list[str] = typer.Option(None, "--strategy"),
     console.print("[dim]The live engine is asynchronous and draws latencies / failures in a different order than the "
                   "backtester, so the two agree statistically, not trade by trade. The final snapshot is in the "
                   "dashboard's Live monitor.[/]")
+
+
+@app.command()
+def trade(strategy: list[str] = typer.Option(None, "--strategy", help="Strategy name (repeatable); default strategy.active"),
+          minutes: float = typer.Option(None, help="hfts / hftl: stop after N minutes (default: run until Ctrl-C)"),
+          confirm_live: bool = typer.Option(False, "--confirm-live", help="hftl: required acknowledgement for real trading"),
+          flatten_on_exit: bool = typer.Option(True, help="hfts / hftl: close every position before stopping"),
+          start: str = typer.Option(None, help="hft / hftr: ISO start (UTC) of the stored events to trade"),
+          end: str = typer.Option(None, help="hft / hftr: ISO end (UTC)"),
+          hours: float = typer.Option(None, help="hft / hftr: trade only the first N hours of the selection"),
+          realtime: bool = typer.Option(None, "--realtime/--virtual-time", help="hft / hftr: pace the replay at 1x"),
+          compare: bool = typer.Option(None, "--compare/--no-compare", help="hft / hftr: also backtest the same events")) -> None:
+    """Trade in the mode of the --profile (hft.ps1 function):
+
+    hft   paper trading on the synthetic market (stored events through the live engine, simulated fills)
+    hftr  paper trading on real recorded events (same, on the real data set)
+    hfts  paper trading on the live stream (simulated fills; the stream is recorded into the real data set)
+    hftl  LIVE trading on the live stream: real transactions (needs app.mode=live AND --confirm-live)
+    """
+    profile = STATE.get("profile")
+    feed = TRADING_PROFILES[profile][1] if profile else "replay"
+    strategies = list(strategy or [])
+    if feed == "replay":
+        stray = [n for n, v in (("--minutes", minutes), ("--confirm-live", confirm_live or None)) if v is not None]
+        if stray:
+            raise typer.BadParameter(f"{', '.join(stray)} only apply to trading the live stream (hfts / hftl); "
+                                     f"{profile or 'this profile'} trades stored events")
+        console.print(f"[bold]{profile or 'trade'}[/]: paper trading on the stored events of the {S().datasets.active or 'configured'} "
+                      "data set (live engine, simulated fills)")
+        if _is_synthetic():
+            console.print("[yellow]Synthetic market: the results exercise the pipeline and say nothing about live profitability.[/]")
+        paper_replay(strategies, start, end, hours or 0.0, bool(realtime), True if compare is None else compare)
+        return
+    stray = [n for n, v in (("--start", start), ("--end", end), ("--hours", hours), ("--realtime / --virtual-time", realtime),
+                            ("--compare / --no-compare", compare)) if v is not None]
+    if stray:
+        raise typer.BadParameter(f"{', '.join(stray)} only apply to trading stored events (hft / hftr); "
+                                 f"{profile} trades the live stream")
+    if feed == "stream-paper":
+        if confirm_live:
+            raise typer.BadParameter("--confirm-live is for hftl (real money); hfts paper trades with simulated fills")
+        console.print("[bold]hfts[/]: paper trading on the live stream (simulated fills; events are recorded into the real data set)")
+        paper(strategies, minutes or 0.0, flatten_on_exit)
+    else:
+        live(strategies, minutes or 0.0, confirm_live, flatten_on_exit)
 
 
 @app.command("latency-probe")
