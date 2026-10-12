@@ -161,6 +161,8 @@ TRADING - four modes, one `trade` command each
   hftl --set app.mode=live trade --confirm-live --minutes 30   4. LIVE trading, real money
       Read docs\LIVE_TRADING.md first. hftl needs app.mode: live (config or --set) AND --confirm-live.
       hfts / hftl record the stream into the real data set, so hftr can backtest it later.
+      They print a status line every 10 s (--status-every N, 0 = off); to watch in a browser,
+      run `hfts dashboard` in a second terminal and open the Live monitor page.
 
 SETUP AND DATA
   hft-doctor                                  check paths; what each data set holds

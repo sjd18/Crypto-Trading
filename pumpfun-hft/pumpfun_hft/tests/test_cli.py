@@ -160,6 +160,21 @@ def test_trade_rejects_options_of_another_mode(tmp_path: Path, profile: str, arg
     assert res.exit_code == 2 and message in " ".join(res.output.split())
 
 
+def test_status_line_summarises_a_trading_session() -> None:
+    from pumpfun_hft.main import _status_line
+
+    snap = {"ts_ms": 1_788_000_000_000, "initial_sol": 10.0, "equity_sol": 10.2, "realized_pnl_sol": 0.15, "closed_trades": 4,
+            "wins": 3, "fills": 9, "failed_fills": 2, "events_processed": 12_345,
+            "positions": [{"value_sol": 0.25}, {"value_sol": 0.05}],
+            "collector": {"events": 12_400, "reconnects": 1},
+            "risk": {"breakers": {"failed_swaps": {"active": True}, "daily_loss": {"active": False}}}}
+    line = _status_line(snap)
+    for part in ("stream 12,400 events · 1 reconnects", "processed 12,345", "2 open (0.3000 SOL)", "4 closed (75% won)",
+                 "+0.1500[/] SOL", "equity 10.2000 SOL (+2.00%)", "fills 9 / failed 2", "paused by failed_swaps"):
+        assert part in line, (part, line)
+    assert "stream" not in _status_line({"ts_ms": 0})  # replay sessions have no collector; nothing missing raises
+
+
 def test_hftl_trade_requires_config_and_flag(tmp_path: Path) -> None:
     for extra in ([], ["--confirm-live"]):  # app.mode is "paper" by default
         res = runner.invoke(app, cli_args(tmp_path, "--profile", "hftl", "--data-root", str(tmp_path / "data"), "trade", *extra))

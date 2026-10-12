@@ -309,41 +309,75 @@ def page_strategies(data: DashboardData) -> str:
             f"<div class='card'><h3>Metrics</h3>{C.html_table(pl.DataFrame(rows, infer_schema_length=None), formats=STRAT_FORMATS, headers=STRAT_HEADERS, scroll=False)}</div>")
 
 
+def _num(v: Any, default: float = 0.0) -> float:
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return default
+    return default if math.isnan(f) or math.isinf(f) else f
+
+
+def _signed_cls(v: float) -> str:
+    return "pos" if v > 0 else "neg" if v < 0 else ""
+
+
 def page_live(state: dict[str, Any] | None, refresh_ms: int, server: bool) -> str:
+    """Live monitor. On the server the whole body is re-fetched from ``/api/live/html`` every ``refresh_ms``."""
     stale_ms = max(5 * refresh_ms, 15_000)  # a few missed snapshots before we call the session gone
-    poll = (f"<script>(function(){{var last=null;"
-            f"function paint(){{if(last===null) return; var age=(Date.now()-last.updated_ms)/1000, v=last.value||{{}};"
+    poll = (f"<script>(function(){{"
+            f"function paint(){{var d=document.getElementById('lv-data'); if(!d||!d.dataset.updated) return;"
+            f"var age=(Date.now()-Number(d.dataset.updated))/1000;"
             f"var st=document.getElementById('lv-status'), ageEl=document.getElementById('lv-age');"
             f"if(ageEl) ageEl.innerText=age.toFixed(0)+' s ago';"
             f"if(!st) return;"
-            f"if(v.stopped){{st.className='banner';st.innerText='Session ended. This is the final snapshot, taken after positions were closed.';}}"
+            f"if(d.dataset.stopped==='1'){{st.className='banner';st.innerText='Session ended. This is the final snapshot, taken after positions were closed.';}}"
             f"else if(age*1000>{stale_ms}){{st.className='banner';st.innerText='Not updating — the last snapshot is '+age.toFixed(0)+' s old. The trading session has stopped or is blocked.';}}"
             f"else {{st.className='muted';st.innerText='Live — updating every '+({refresh_ms}/1000).toFixed(0)+' s.';}}}}"
-            f"function pull(){{fetch('/api/live').then(r=>r.json()).then(function(s){{"
-            f"if(!s||!s.value) return; if(!document.getElementById('lv-eq')){{location.reload();return;}} last=s; const v=s.value;"
-            f"document.getElementById('lv-eq').innerText=Number(v.equity_sol).toFixed(4);"
-            f"document.getElementById('lv-pos').innerText=(v.positions||[]).length;"
-            f"document.getElementById('lv-ev').innerText=Number(v.events_processed||0).toLocaleString();"
-            f"document.getElementById('lv-q').innerText=(v.pending_orders||0)+' / '+(v.queue||0);"
-            f"document.getElementById('lv-json').innerText=JSON.stringify(v, null, 1);"
-            f"paint();}}).catch(function(){{}});}}"
-            f"setInterval(pull, {refresh_ms}); setInterval(paint, 1000); pull();}})();</script>"
+            f"function pull(){{fetch('/api/live/html').then(r=>r.text()).then(function(h){{"
+            f"var root=document.getElementById('lv-root'); if(!root) return; var det=root.querySelector('details'), open=det&&det.open;"
+            f"root.innerHTML=h; if(open){{var d2=root.querySelector('details'); if(d2) d2.open=true;}} paint();}}).catch(function(){{}});}}"
+            f"setInterval(pull, {refresh_ms}); setInterval(paint, 1000); paint();}})();</script>"
             ) if server else ""
+    return f"<div id='lv-root'>{live_body(state, server)}</div>{poll}"
+
+
+def live_body(state: dict[str, Any] | None, server: bool) -> str:
+    """Content of the Live monitor for one snapshot of the trading session (``LiveTrader.snapshot``)."""
     if not state:
-        return ('<p class="muted">No live session state found. Start <code>python -m pumpfun_hft.main paper</code> (or <code>live</code>); '
-                'this page refreshes from its snapshots.</p>') + poll
+        return ('<p class="muted">No live session state found. Start one: <code>hfts trade</code> (paper trading on the live '
+                'stream), <code>hftl trade</code> (live) or <code>hftr trade</code> (paper on recorded events). Run the dashboard '
+                'with the same command (e.g. <code>hfts dashboard</code>) so it reads that data set; this page follows the '
+                'session\'s snapshots.</p>')
     v = state.get("value", {})
-    tiles = "".join([_kpi("Equity (SOL)", f"<span id='lv-eq'>{float(v.get('equity_sol', 0)):.4f}</span>"),
-                     _kpi("Open positions", f"<span id='lv-pos'>{len(v.get('positions', []))}</span>"),
-                     _kpi("Events processed", f"<span id='lv-ev'>{int(v.get('events_processed', 0)):,}</span>"),
-                     _kpi("Pending / queued", f"<span id='lv-q'>{int(v.get('pending_orders', 0))} / {int(v.get('queue', 0))}</span>"),
-                     _kpi("Session", html.escape(str(v.get("session") or "paper"))),
-                     _kpi("Last snapshot", f"<span id='lv-age'>{C.fmt_value(state.get('updated_ms', 0), 'datetime')}</span>")])
-    status = ('<div class="banner">Session ended. This is the final snapshot, taken after positions were closed.</div>'
+    updated = int(_num(state.get("updated_ms")))
+    eq, init, pnl = _num(v.get("equity_sol")), _num(v.get("initial_sol")), _num(v.get("realized_pnl_sol"))
+    ret = eq / init - 1 if init else None
+    closed, wins = int(_num(v.get("closed_trades"))), int(_num(v.get("wins")))
+    pos = v.get("positions") or []
+    open_sol = sum(_num(p.get("value_sol")) for p in pos)
+    col = v.get("collector") or {}
+    session = " · ".join(html.escape(str(x)) for x in (v.get("profile"), v.get("session") or "paper") if x)
+    tiles = [_kpi("Session", session),
+             _kpi("Equity (SOL)", f"{eq:.4f}"),
+             _kpi("Return", _pct(ret, signed=True), _signed_cls(ret or 0.0)),
+             _kpi("Realised PnL (SOL)", f"{pnl:+.4f}", _signed_cls(pnl)),
+             _kpi("Closed trades", f"{closed:,}" + (f" <span class='muted' style='font-size:13px'>{wins / closed:.0%} won</span>" if closed else "")),
+             _kpi("Open positions", f"{len(pos)} <span class='muted' style='font-size:13px'>{open_sol:.4f} SOL</span>"),
+             _kpi("Fills / failed", f"{int(_num(v.get('fills'))):,} / {int(_num(v.get('failed_fills'))):,}"),
+             _kpi("Events processed", f"{int(_num(v.get('events_processed'))):,}")]
+    if col:
+        tiles.append(_kpi("Stream", f"{int(_num(col.get('events'))):,} <span class='muted' style='font-size:13px'>"
+                                    f"{int(_num(col.get('reconnects')))} reconnects</span>"))
+    tiles.append(_kpi("Pending / queued", f"{int(_num(v.get('pending_orders')))} / {int(_num(v.get('queue')))}"))
+    if v.get("started_ms"):
+        tiles.append(_kpi("Started (UTC)", C.fmt_value(v.get("started_ms"), "datetime")))
+    tiles.append(_kpi("Last snapshot", f"<span id='lv-age'>{C.fmt_value(updated, 'datetime')}</span>"))
+    status = ('<div id="lv-status" class="banner">Session ended. This is the final snapshot, taken after positions were closed.</div>'
               if v.get("stopped") else
-              f'<p class="muted">Snapshot taken {C.fmt_value(state.get("updated_ms", 0), "datetime")} UTC.</p>' if not server else
-              '<p class="muted">Live — updating.</p>')
-    status = status.replace("<div ", "<div id='lv-status' ", 1).replace("<p ", "<p id='lv-status' ", 1)
+              f'<p id="lv-status" class="muted">Snapshot taken {C.fmt_value(updated, "datetime")} UTC.</p>' if not server else
+              '<p id="lv-status" class="muted">Live — updating.</p>')
+    data = f"<div id='lv-data' hidden data-updated='{updated}' data-stopped='{1 if v.get('stopped') else 0}'></div>"
+    tiles_html = "".join(tiles)
     lat = v.get("latency", {})
     lat_df = pl.DataFrame([{"channel": k, **{kk: vv for kk, vv in d.items() if kk in ("count", "p50", "p90", "p99", "max", "budget_ms", "breaches")}}
                            for k, d in lat.items()], infer_schema_length=None) if lat else pl.DataFrame()
@@ -354,9 +388,9 @@ def page_live(state: dict[str, Any] | None, refresh_ms: int, server: bool) -> st
     lat_fmt = {**{k: "num1" for k in ("p50", "p90", "p99", "max", "budget_ms")}, "count": "int", "breaches": "int"}
     lat_hdr = {"budget_ms": "budget", "breaches": "over budget"}
     pos_fmt = {"mint": "addr", "value_sol": "sol", "cost_sol": "sol", "ret": "pct_s", "entry_ms": "datetime", "tokens": "int"}
-    return (f"{status}<div class='kpis'>{tiles}</div><div class='card'><h3>Latency (ms)</h3>"
-            f"{C.html_table(lat_df, formats=lat_fmt, headers=lat_hdr, scroll=False)}</div>"
-            f"<div class='grid2'><div class='card'><h3>Circuit breakers</h3>{C.html_table(brk_df, scroll=False)}</div>"
-            f"<div class='card'><h3>Open positions</h3>{C.html_table(pos_df, formats=pos_fmt)}</div></div>"
-            f"<div class='card'><h3>Raw snapshot</h3><pre id='lv-json' style='white-space:pre-wrap;font-size:11px;max-height:360px;overflow:auto'>"
-            f"{html.escape(json.dumps(v, indent=1, default=str)[:20000])}</pre></div>{poll}")
+    return (f"{data}{status}<div class='kpis'>{tiles_html}</div>"
+            f"<div class='grid2'><div class='card'><h3>Open positions</h3>{C.html_table(pos_df, formats=pos_fmt)}</div>"
+            f"<div class='card'><h3>Circuit breakers</h3>{C.html_table(brk_df, scroll=False)}</div></div>"
+            f"<div class='card'><h3>Latency (ms)</h3>{C.html_table(lat_df, formats=lat_fmt, headers=lat_hdr, scroll=False)}</div>"
+            f"<details class='card'><summary>Raw snapshot</summary><pre style='white-space:pre-wrap;font-size:11px;max-height:360px;overflow:auto'>"
+            f"{html.escape(json.dumps(v, indent=1, default=str)[:20000])}</pre></details>")

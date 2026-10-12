@@ -970,7 +970,32 @@ def stream(minutes: float = typer.Option(0, help="Stop after N minutes (0 = run 
         console.print(f"[yellow]{gaps.height} slot gaps wider than the threshold — run `verify-data` to inspect them.[/]")
 
 
-def _run_trader(paper: bool, strategies: list[str], minutes: float, flatten_on_exit: bool) -> None:
+def _status_line(snap: dict[str, Any]) -> str:
+    """One line on a live / paper session from a LiveTrader snapshot: stream, positions, trades, PnL, equity, fills."""
+    from datetime import datetime
+
+    col = snap.get("collector") or {}
+    eq, init = float(snap.get("equity_sol") or 0.0), float(snap.get("initial_sol") or 0.0)
+    pnl = float(snap.get("realized_pnl_sol") or 0.0)
+    closed, wins = int(snap.get("closed_trades") or 0), int(snap.get("wins") or 0)
+    pos = snap.get("positions") or []
+    parts = [datetime.fromtimestamp(int(snap.get("ts_ms") or 0) / 1000).strftime("%H:%M:%S")]  # local time, like the log lines
+    if col:
+        parts.append(f"stream {int(col.get('events') or 0):,} events · {int(col.get('reconnects') or 0)} reconnects")
+    parts.append(f"processed {int(snap.get('events_processed') or 0):,}")
+    parts.append(f"{len(pos)} open ({sum(float(p.get('value_sol') or 0.0) for p in pos):.4f} SOL)")
+    parts.append(f"{closed:,} closed" + (f" ({wins / closed:.0%} won)" if closed else ""))
+    c = "green" if pnl > 0 else "red" if pnl < 0 else "white"
+    parts.append(f"PnL [{c}]{pnl:+.4f}[/] SOL")
+    parts.append(f"equity {eq:.4f} SOL" + (f" ({eq / init - 1:+.2%})" if init else ""))
+    parts.append(f"fills {int(snap.get('fills') or 0):,} / failed {int(snap.get('failed_fills') or 0):,}")
+    active = [k for k, d in ((snap.get("risk") or {}).get("breakers") or {}).items() if d.get("active")]
+    if active:
+        parts.append(f"[yellow]paused by {', '.join(active)}[/]")
+    return " · ".join(parts)
+
+
+def _run_trader(paper: bool, strategies: list[str], minutes: float, flatten_on_exit: bool, status_every: float = 10.0) -> None:
     from pumpfun_hft.backtester.replay import load_metadata
     from pumpfun_hft.execution.engine import LiveTrader
     from pumpfun_hft.execution.gateway import LiveGateway, PaperGateway
@@ -998,9 +1023,24 @@ def _run_trader(paper: bool, strategies: list[str], minutes: float, flatten_on_e
     trader = LiveTrader(s, queue, gateway_factory, strategies=strategies or None, meta=meta, latency=latency,
                         metadata=load_metadata(_metadata_path()), collector_status=collector.status)
     holder["trader"] = trader
+    trader.profile = STATE.get("profile") or ""
+    who = STATE.get("profile") or ("paper" if paper else "live")
+    console.print(f"[bold]{who}[/] trading {', '.join(st.name for st in trader.runtime.strategies)} with "
+                  f"{trader.initial_sol:g} SOL{' (simulated)' if paper else ''}"
+                  f"{f' for {minutes:g} min' if minutes else ' until Ctrl-C'}"
+                  f"{f'; status every {status_every:g} s' if status_every > 0 else ''}.")
+    console.print(f"[dim]Dashboard: run `{_cli()} dashboard` in another terminal and open the Live monitor page.[/]")
+
+    async def report() -> None:
+        while True:
+            await asyncio.sleep(status_every)
+            if trader.last_snapshot is not None:
+                console.print(_status_line(trader.last_snapshot), soft_wrap=True)
 
     async def run() -> None:
         tasks = [asyncio.create_task(collector.run()), asyncio.create_task(trader.run())]
+        if status_every > 0:
+            tasks.append(asyncio.create_task(report()))
         if "bh" in holder:
             holder["bh"].start()
             holder["prio"].start()
@@ -1020,21 +1060,25 @@ def _run_trader(paper: bool, strategies: list[str], minutes: float, flatten_on_e
         asyncio.run(run())
     except KeyboardInterrupt:
         console.print("stopped")
+    if trader.last_snapshot is not None:
+        console.print(f"[bold]final[/] {_status_line(trader.last_snapshot)}", soft_wrap=True)
     _ml_funnel(trader.runtime)
 
 
 @app.command()
 def paper(strategy: list[str] = typer.Option(None, "--strategy"), minutes: float = typer.Option(0),
-          flatten_on_exit: bool = typer.Option(True)) -> None:
+          flatten_on_exit: bool = typer.Option(True),
+          status_every: float = typer.Option(10.0, help="Print a status line every N seconds (0 = off)")) -> None:
     """Paper trading: live data, simulated execution (no wallet needed)."""
     _require_real_store("paper")
-    _run_trader(True, list(strategy or []), minutes, flatten_on_exit)
+    _run_trader(True, list(strategy or []), minutes, flatten_on_exit, status_every)
 
 
 @app.command()
 def live(strategy: list[str] = typer.Option(None, "--strategy"), minutes: float = typer.Option(0),
          confirm_live: bool = typer.Option(False, "--confirm-live", help="Required acknowledgement for real trading"),
-         flatten_on_exit: bool = typer.Option(True)) -> None:
+         flatten_on_exit: bool = typer.Option(True),
+         status_every: float = typer.Option(10.0, help="Print a status line every N seconds (0 = off)")) -> None:
     """LIVE trading with real funds. Requires app.mode=live in config AND --confirm-live."""
     if S().app.mode != "live" or not confirm_live:
         console.print("[red]Refusing to trade live: set app.mode: live in your config and pass --confirm-live.[/]")
@@ -1044,7 +1088,7 @@ def live(strategy: list[str] = typer.Option(None, "--strategy"), minutes: float 
         raise typer.Exit(2)
     _require_real_store("live")
     console.print("[bold red]LIVE TRADING — real transactions will be signed and sent.[/]")
-    _run_trader(False, list(strategy or []), minutes, flatten_on_exit)
+    _run_trader(False, list(strategy or []), minutes, flatten_on_exit, status_every)
 
 
 @app.command("paper-replay")
@@ -1119,6 +1163,7 @@ def trade(strategy: list[str] = typer.Option(None, "--strategy", help="Strategy 
           minutes: float = typer.Option(None, help="hfts / hftl: stop after N minutes (default: run until Ctrl-C)"),
           confirm_live: bool = typer.Option(False, "--confirm-live", help="hftl: required acknowledgement for real trading"),
           flatten_on_exit: bool = typer.Option(True, help="hfts / hftl: close every position before stopping"),
+          status_every: float = typer.Option(None, help="hfts / hftl: print a status line every N seconds (default 10, 0 = off)"),
           start: str = typer.Option(None, help="hft / hftr: ISO start (UTC) of the stored events to trade"),
           end: str = typer.Option(None, help="hft / hftr: ISO end (UTC)"),
           hours: float = typer.Option(None, help="hft / hftr: trade only the first N hours of the selection"),
@@ -1135,7 +1180,8 @@ def trade(strategy: list[str] = typer.Option(None, "--strategy", help="Strategy 
     feed = TRADING_PROFILES[profile][1] if profile else "replay"
     strategies = list(strategy or [])
     if feed == "replay":
-        stray = [n for n, v in (("--minutes", minutes), ("--confirm-live", confirm_live or None)) if v is not None]
+        stray = [n for n, v in (("--minutes", minutes), ("--confirm-live", confirm_live or None), ("--status-every", status_every))
+                 if v is not None]
         if stray:
             raise typer.BadParameter(f"{', '.join(stray)} only apply to trading the live stream (hfts / hftl); "
                                      f"{profile or 'this profile'} trades stored events")
@@ -1154,9 +1200,9 @@ def trade(strategy: list[str] = typer.Option(None, "--strategy", help="Strategy 
         if confirm_live:
             raise typer.BadParameter("--confirm-live is for hftl (real money); hfts paper trades with simulated fills")
         console.print("[bold]hfts[/]: paper trading on the live stream (simulated fills; events are recorded into the real data set)")
-        paper(strategies, minutes or 0.0, flatten_on_exit)
+        paper(strategies, minutes or 0.0, flatten_on_exit, 10.0 if status_every is None else status_every)
     else:
-        live(strategies, minutes or 0.0, confirm_live, flatten_on_exit)
+        live(strategies, minutes or 0.0, confirm_live, flatten_on_exit, 10.0 if status_every is None else status_every)
 
 
 @app.command("latency-probe")

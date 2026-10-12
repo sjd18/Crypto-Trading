@@ -114,6 +114,11 @@ def create_app(settings: Any, meta: Any = None) -> FastAPI:
         state = meta.all_state().get("live") if meta is not None else None
         return JSONResponse(jsonable(state or {}))
 
+    @app.get("/api/live/html", response_class=HTMLResponse)
+    def api_live_html() -> str:
+        """The Live monitor body for the newest snapshot (the page swaps it in on every refresh)."""
+        return V.live_body(meta.all_state().get("live") if meta is not None else None, server=True)
+
     return app
 
 

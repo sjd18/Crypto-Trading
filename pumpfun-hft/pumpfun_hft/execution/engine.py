@@ -87,6 +87,7 @@ class LiveTrader:
         self.resolver = OutcomeResolver(s.discovery, self.creators, self.wallets)
         self.discovery = TokenDiscoveryEngine(s, self.market, self.creators)
         cap = s.live.paper_initial_capital_sol if initial_capital_sol is None else initial_capital_sol
+        self.initial_sol = float(cap)
         self.portfolio = Portfolio(int(cap * LAMPORTS_PER_SOL), s.fees.close_token_account_on_exit)
         self.risk = RiskEngine(s.risk, self.portfolio, int(s.backtest.min_order_sol * LAMPORTS_PER_SOL))
         self.sizer = Sizer(s.sizing, s.risk.limits, s.position, s.backtest)
@@ -108,6 +109,9 @@ class LiveTrader:
         self.events_processed = 0
         self.session = s.app.mode  # shown on the Live monitor: "paper", "live" or "paper-replay"
         self.stopped = False       # set by stop(); the final snapshot carries it so the dashboard can say so
+        self.profile = ""          # trading profile that started the session (hfts / hftl / ...), shown on the Live monitor
+        self.started_ms = self.clock.now_ms()
+        self.last_snapshot: dict[str, Any] | None = None  # newest snapshot, for status lines (snapshot() itself books equity)
 
     # ------------------------------------------------------------------ event path
     def on_event(self, ev: Event) -> list[Order]:
@@ -202,12 +206,19 @@ class LiveTrader:
         if self.risk.breakers.flatten_requested:
             self.risk.breakers.flatten_requested = False
             self.runtime.flatten = True
-        return {
+        failed = (OrderStatus.FAILED, OrderStatus.DROPPED, OrderStatus.EXPIRED, OrderStatus.REJECTED)
+        snap = {
             "ts_ms": now,
             "session": self.session,
+            "profile": self.profile,
+            "started_ms": self.started_ms,
             "stopped": self.stopped,
+            "initial_sol": self.initial_sol,
             "equity_sol": eq / LAMPORTS_PER_SOL,
             "cash_sol": self.portfolio.cash / LAMPORTS_PER_SOL,
+            "wins": sum(1 for t in self.portfolio.trades if t.pnl_sol > 0),
+            "fills": sum(1 for f in self.fills if f.status not in failed),
+            "failed_fills": sum(1 for f in self.fills if f.status in failed),
             "positions": [{"mint": p.mint, "strategy": p.strategy, "tokens": p.tokens, "value_sol": p.last_value / LAMPORTS_PER_SOL,
                            "cost_sol": p.cost_lamports / LAMPORTS_PER_SOL, "ret": p.economic_return(), "entry_ms": p.entry_ms}
                           for p in self.portfolio.positions.values() if p.tokens > 0],
@@ -221,6 +232,8 @@ class LiveTrader:
             "collector": self.collector_status() if self.collector_status else {},
             "recent_signals": list(self.runtime.signal_records)[-50:],
         }
+        self.last_snapshot = snap
+        return snap
 
     async def _snapshot_loop(self) -> None:
         n = 0

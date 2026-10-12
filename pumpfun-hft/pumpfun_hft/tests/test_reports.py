@@ -215,6 +215,25 @@ def test_dashboard_api(dash: Any) -> None:
     assert live["value"]["events_processed"] == 1234 and live["value"]["unrealised"] is None
 
 
+def test_live_monitor_refreshes_its_whole_body(dash: Any) -> None:
+    client, _, meta, _ = dash
+    page = client.get("/live").text
+    assert "id='lv-root'" in page and "/api/live/html" in page
+    body = client.get("/api/live/html").text  # an old snapshot without the PnL fields still renders
+    assert "Realised PnL" in body and "1,234" in body and "id='lv-data'" in body
+    assert_safe(body)
+    old = meta.all_state()["live"]["value"]
+    meta.set_state("live", {**old, "profile": "hfts", "session": "paper", "initial_sol": 10.0, "equity_sol": 10.5,
+                            "realized_pnl_sol": 0.5, "closed_trades": 4, "wins": 3, "fills": 9, "failed_fills": 2,
+                            "collector": {"events": 777, "reconnects": 1}})
+    try:
+        body = client.get("/api/live/html").text
+        assert "hfts · paper" in body and "+5.00%" in body and "+0.5000" in body and "75% won" in body
+        assert "9 / 2" in body and "777" in body and "1 reconnects" in body
+    finally:
+        meta.set_state("live", old)
+
+
 def test_run_ids_are_escaped(dash: Any) -> None:
     client, s, _, r = dash
     hostile = "x' autofocus onfocus='alert(1)"  # a directory name is just another untrusted string
