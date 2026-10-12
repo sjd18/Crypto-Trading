@@ -7,6 +7,7 @@ each). Run it with ``pytest -m slow`` or as part of the full suite.
 from __future__ import annotations
 
 import importlib.util
+import os
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +17,7 @@ nbformat = pytest.importorskip("nbformat")
 nbclient = pytest.importorskip("nbclient")
 
 NB_DIR = Path(__file__).resolve().parents[1] / "notebooks"
+PROJECT_DIR = Path(__file__).resolve().parents[2]  # holds the pumpfun_hft package
 
 
 def _builder() -> Any:
@@ -43,7 +45,9 @@ def test_committed_notebook_matches_builder_and_ran_cleanly(name: str) -> None:
 
 @pytest.mark.slow
 @pytest.mark.parametrize("name", NAMES)
-def test_notebook_executes(name: str, tmp_path: Path) -> None:
+def test_notebook_executes(name: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # the kernel is a separate process: without `pip install -e .` it only finds the package through PYTHONPATH
+    monkeypatch.setenv("PYTHONPATH", os.pathsep.join(p for p in (str(PROJECT_DIR), os.environ.get("PYTHONPATH")) if p))
     nb = BUILDER.NOTEBOOKS[name]()
     client = nbclient.NotebookClient(nb, timeout=1200, kernel_name="python3", resources={"metadata": {"path": str(tmp_path)}})
     client.execute()  # raises CellExecutionError on the first failing cell
