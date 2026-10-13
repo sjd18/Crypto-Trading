@@ -16,6 +16,7 @@ synthetic and real runs are listed separately. Both use the same port: run one a
 
 | Page | Shows |
 |---|---|
+| Strategy builder | build and run a trading session: pick the mode (`hft`, `hftr`, `hfts` (default), `hftl`), one or more strategies from `strategies/`, a duration and options; the page shows the exact PowerShell command (Copy) and can run it (**Run in dashboard**, **Stop**). Beside it: a status light for the RPC connection (e.g. Helius) and the session, the session's data (positions, PnL, latency) and its raw PowerShell output. See below |
 | Overview | headline KPIs, equity and drawdown, per-strategy breakdown, provenance |
 | Trades | every closed trade, exit-reason summary, every fill and failed attempt (sortable) |
 | Equity curve | zoomable equity with drawdown panel, monthly returns |
@@ -29,6 +30,27 @@ synthetic and real runs are listed separately. Both use the same port: run one a
 
 JSON endpoints: `/api/runs`, `/api/runs/{run_id}/metrics`, `/api/runs/{run_id}/equity`,
 `/api/live` (plus `/api/live/html`, the rendered Live monitor); interactive API docs at `/api/docs`.
+
+### Strategy builder
+
+`hfts dashboard`, then open http://127.0.0.1:8050/builder (the first tab).
+
+* **Run in dashboard** starts the same command the page shows, with the Python that serves the
+  dashboard, on the data-set folder `hft.ps1` points at (`HFT_SYNTH_DIR` / `HFT_REAL_DIR`, else
+  `datasets.*` in the config) and the `HFT_CONFIG` file. One session at a time; its output streams
+  into the black panel, and the data panel follows its snapshots.
+* **Stop** ends a live-stream session the normal way (positions closed, final snapshot) through a
+  stop file the CLI polls; a replay (`hft` / `hftr`) is terminated. Stopping the dashboard stops its
+  session too.
+* **`hftl` is never started from the page.** It builds the command; real-money trading is started by
+  hand in PowerShell, where it still needs `app.mode=live` and `--confirm-live`.
+* The status light: green = the RPC answers `getSlot` (round trip shown, checked at most every
+  15 s) and the session is updating; amber = rate-limited, slow (> 1.5 s), no `SOLANA_WS_URL`, or a
+  session that stopped updating; red = no RPC configured or not reachable. Only the provider's host
+  name is shown, never the URL (it carries your API key).
+* The endpoints that start or stop sessions (`/api/jobs`, `/api/jobs/stop`, `/api/builder/command`)
+  answer only the dashboard's own page: a custom request header that other websites cannot send
+  without a CORS preflight, plus a Host / Origin check against `dashboard.host` / `port`.
 
 ## Reports
 

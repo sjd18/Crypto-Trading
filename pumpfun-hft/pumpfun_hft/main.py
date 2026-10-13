@@ -895,7 +895,7 @@ def dashboard() -> None:
     from pumpfun_hft.dashboard.app import serve
 
     console.print(f"dashboard on http://{S().dashboard.host}:{S().dashboard.port}")
-    serve(S(), _meta())
+    serve(S(), _meta(), STATE.get("config_path"))
 
 
 @app.command("dashboard-export")
@@ -1045,11 +1045,14 @@ def _run_trader(paper: bool, strategies: list[str], minutes: float, flatten_on_e
             holder["bh"].start()
             holder["prio"].start()
             trader.runtime.priority_override = lambda urgency: holder["prio"].micro_lamports(urgency.value)
+        stop_file = os.environ.get("PUMPFUN_STOP_FILE")  # set by the dashboard's strategy builder: its Stop button
+        t_end = time.monotonic() + minutes * 60 if minutes else None
         try:
-            if minutes:
-                await asyncio.sleep(minutes * 60)
-            else:
-                await asyncio.Event().wait()
+            while t_end is None or time.monotonic() < t_end:
+                await asyncio.sleep(1.0 if t_end is None else max(0.0, min(1.0, t_end - time.monotonic())))
+                if stop_file and os.path.exists(stop_file):
+                    console.print("stop requested from the dashboard: closing positions")
+                    break
         finally:
             await trader.stop(flatten=flatten_on_exit)
             await collector.stop()

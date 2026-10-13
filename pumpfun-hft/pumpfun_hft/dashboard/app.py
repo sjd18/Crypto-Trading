@@ -16,10 +16,12 @@ from typing import Any
 from urllib.parse import quote
 
 import plotly.offline as po
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 
 from pumpfun_hft.analytics import charts as C
+from pumpfun_hft.core.config import PROJECT_ROOT
+from pumpfun_hft.dashboard import builder as B
 from pumpfun_hft.dashboard import views as V
 from pumpfun_hft.utils.jsonutil import jsonable
 
@@ -44,11 +46,41 @@ def shell(title: str, body: str, active: str, run_ids: list[str], run: str | Non
             f"<script>{C.TABLE_JS}{C.THEME_JS}</script></body></html>")
 
 
-def create_app(settings: Any, meta: Any = None) -> FastAPI:
-    """Build the FastAPI application bound to ``settings.paths``."""
+def create_app(settings: Any, meta: Any = None, config: str | Path | None = None, runner: B.JobRunner | None = None,
+               health: B.HealthProbe | None = None) -> FastAPI:
+    """Build the FastAPI application bound to ``settings.paths``. ``config`` is the --config file the
+    strategy builder passes on to the sessions it starts."""
     data = V.DashboardData(settings.paths.resolve("reports_dir"), settings.paths.events_dir, meta)
     app = FastAPI(title="pumpfun-hft dashboard", docs_url="/api/docs")
     cfg = settings.dashboard
+    runner = runner or B.JobRunner(settings, PROJECT_ROOT, config)
+    health = health or B.HealthProbe()
+    allowed_hosts = {f"{h}:{cfg.port}" for h in (cfg.host, "127.0.0.1", "localhost")}
+    stores: dict[str, Any] = {}
+
+    def guard(request: Request) -> None:
+        """Endpoints that start or stop sessions answer only this dashboard's own page: the custom header
+        makes a cross-site request need a CORS preflight (which is never granted), and the Host check
+        stops DNS-rebinding pages that pretend to be 127.0.0.1."""
+        if request.headers.get("x-pumpfun-dashboard") != "1" or request.headers.get("host") not in allowed_hosts:
+            raise HTTPException(403, "forbidden")
+        origin = request.headers.get("origin")
+        if origin and origin.split("://", 1)[-1] not in allowed_hosts:
+            raise HTTPException(403, "forbidden")
+
+    def session_state() -> Any:
+        """Live snapshot of the builder's newest session (its data set), else this dashboard's data set."""
+        p = runner.meta_path()
+        if p is not None and p.exists():
+            from pumpfun_hft.database.meta import MetaStore
+
+            key = str(p)
+            if key not in stores:
+                stores[key] = MetaStore(p)
+            st = stores[key].all_state().get("live")
+            if st:
+                return st
+        return meta.all_state().get("live") if meta is not None else None
 
     @app.get("/static/plotly.min.js")
     def plotly_js() -> Response:
@@ -78,6 +110,8 @@ def create_app(settings: Any, meta: Any = None) -> FastAPI:
         elif page == "live":
             state = meta.all_state().get("live") if meta is not None else None
             body = V.page_live(state, cfg.live_refresh_ms, server=True)
+        elif page == "builder":
+            body = V.page_builder(B.strategy_catalogue(settings), session_state(), cfg.live_refresh_ms, server=True)
         else:
             body = f"<p>Unknown page <code>{html.escape(page)}</code>.</p>"
         return shell(dict(V.PAGES).get(page, page), body, page, data.run_ids(), rid)
@@ -119,13 +153,52 @@ def create_app(settings: Any, meta: Any = None) -> FastAPI:
         """The Live monitor body for the newest snapshot (the page swaps it in on every refresh)."""
         return V.live_body(meta.all_state().get("live") if meta is not None else None, server=True)
 
+    # ---------------------------------------------------------------- strategy builder
+    @app.post("/api/builder/command")
+    async def api_builder_command(request: Request) -> JSONResponse:
+        """The PowerShell line for a builder form (nothing is run)."""
+        guard(request)
+        try:
+            spec = B.parse_spec(await request.json(), B.strategy_names())
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)})
+        return JSONResponse({"powershell": B.powershell_line(spec), "runnable": spec.mode != "hftl"})
+
+    @app.post("/api/jobs")
+    async def api_job_start(request: Request) -> JSONResponse:
+        guard(request)
+        try:
+            spec = B.parse_spec(await request.json(), B.strategy_names())
+            runner.start(spec)
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        return JSONResponse(jsonable(runner.status()))
+
+    @app.post("/api/jobs/stop")
+    def api_job_stop(request: Request) -> JSONResponse:
+        guard(request)
+        return JSONResponse({"stopping": runner.stop()})
+
+    @app.get("/api/jobs/current")
+    def api_job_current(since: int = 0) -> JSONResponse:
+        return JSONResponse(jsonable(runner.status(since)))
+
+    @app.get("/api/builder/live/html", response_class=HTMLResponse)
+    def api_builder_live() -> str:
+        return V.live_body(session_state(), server=True)
+
+    @app.get("/api/health")
+    def api_health() -> JSONResponse:
+        job = runner.status()["job"]
+        return JSONResponse(jsonable(health.check(session_state(), job, max(5 * cfg.live_refresh_ms, 15_000))))
+
     return app
 
 
-def serve(settings: Any, meta: Any = None) -> None:
+def serve(settings: Any, meta: Any = None, config: str | Path | None = None) -> None:
     import uvicorn
 
-    uvicorn.run(create_app(settings, meta), host=settings.dashboard.host, port=settings.dashboard.port, log_level="warning")
+    uvicorn.run(create_app(settings, meta, config), host=settings.dashboard.host, port=settings.dashboard.port, log_level="warning")
 
 
 def static_export(settings: Any, out_path: str | Path, run_id: str | None = None, meta: Any = None) -> Path:
@@ -142,6 +215,7 @@ def static_export(settings: Any, out_path: str | Path, run_id: str | None = None
         "tokens": V.page_tokens(r, data, data.artefact(rid, "tokens.parquet"), None).split("</form>", 1)[-1],
         "features": V.page_features(data.importance()), "strategies": V.page_strategies(data),
         "live": V.page_live(state, cfg.live_refresh_ms, server=False),
+        "builder": V.page_builder(B.strategy_catalogue(settings), state, cfg.live_refresh_ms, server=False),
     }
     nav = "".join(f"<button data-t='{k}' class='{'on' if i == 0 else ''}'>{label}</button>" for i, (k, label) in enumerate(V.PAGES))
     tabs = "".join(f"<section class='tab {'on' if i == 0 else ''}' id='t-{k}'>{bodies[k]}</section>" for i, (k, _) in enumerate(V.PAGES))

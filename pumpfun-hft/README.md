@@ -109,7 +109,10 @@ interlocks: `app.mode: live` in the config (or `--set`) **and** `--confirm-live`
 another mode are refused (e.g. `--minutes` on `hftr`, `--confirm-live` on `hfts`). While
 `hfts` / `hftl` run they print a status line every 10 s (stream events, open positions, closed
 trades and win rate, realised PnL, equity, fills / failed; `--status-every N`, 0 = off), and
-`hfts dashboard` in a second terminal shows the same on the Live monitor page. Since
+`hfts dashboard` in a second terminal shows the same on the Live monitor page. The dashboard's
+**Strategy builder** tab composes these commands by clicking (mode, strategies, duration), runs the
+paper modes with their output on the page, and shows a status light for the RPC connection; it
+never starts `hftl` (see [docs/DASHBOARD.md](docs/DASHBOARD.md)). Since
 PowerShell command names ignore case, live trading is `hftl`, not `HFTS`. Without `hft.ps1`:
 `python -m pumpfun_hft.main --profile hfts trade --minutes 120`.
 

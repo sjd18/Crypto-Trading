@@ -22,7 +22,7 @@ from pumpfun_hft.analytics.report import EXIT_FORMATS, EXIT_HEADERS, TRADE_FORMA
 from pumpfun_hft.backtester.results import BacktestResult
 from pumpfun_hft.utils.timeutil import ms_to_iso
 
-PAGES = [("overview", "Overview"), ("trades", "Trades"), ("equity", "Equity curve"), ("drawdown", "Drawdown"),
+PAGES = [("builder", "Strategy builder"), ("overview", "Overview"), ("trades", "Trades"), ("equity", "Equity curve"), ("drawdown", "Drawdown"),
          ("heatmaps", "Heatmaps"), ("wallets", "Wallet explorer"), ("tokens", "Token explorer"),
          ("features", "Feature importance"), ("strategies", "Strategy comparison"), ("live", "Live monitor")]
 
@@ -394,3 +394,234 @@ def live_body(state: dict[str, Any] | None, server: bool) -> str:
             f"<div class='card'><h3>Latency (ms)</h3>{C.html_table(lat_df, formats=lat_fmt, headers=lat_hdr, scroll=False)}</div>"
             f"<details class='card'><summary>Raw snapshot</summary><pre style='white-space:pre-wrap;font-size:11px;max-height:360px;overflow:auto'>"
             f"{html.escape(json.dumps(v, indent=1, default=str)[:20000])}</pre></details>")
+
+
+# --------------------------------------------------------------------------- strategy builder
+BUILDER_CSS = """
+main:has(#bt-root){max-width:1480px} #bt-root [hidden]{display:none!important}
+.bt-top{display:flex;flex-wrap:wrap;gap:12px 24px;align-items:center;justify-content:space-between;margin:14px 0 6px}
+.bt-top .sub{margin:0}
+.bt-health{display:flex;gap:10px;align-items:center;background:var(--surface);border:1px solid var(--border);border-radius:10px;
+  padding:8px 14px;min-width:260px} .bt-health b{display:block;font-size:13px} .bt-health small{color:var(--ink2);font-size:12px}
+.bt-dot{width:14px;height:14px;border-radius:50%;background:var(--muted);flex:none}
+.bt-health[data-level=good] .bt-dot{background:var(--good);animation:bt-pulse 2s infinite}
+.bt-health[data-level=warn] .bt-dot{background:#d89b00} .bt-health[data-level=bad] .bt-dot{background:var(--bad)}
+@keyframes bt-pulse{0%{box-shadow:0 0 0 0 rgba(12,163,12,.45)}70%{box-shadow:0 0 0 9px rgba(12,163,12,0)}100%{box-shadow:0 0 0 0 rgba(12,163,12,0)}}
+.bt-grid{display:grid;grid-template-columns:minmax(0,5fr) 64px minmax(0,6fr);gap:12px;align-items:start}
+@media (max-width:980px){.bt-grid{grid-template-columns:minmax(0,1fr)}.bt-flow{display:none}}
+@media (max-width:560px){.bt-modes{grid-template-columns:1fr}.bt-dur output{min-width:0}.bt-health{min-width:0}}
+.bt-cmd code{min-width:0}
+.bt-build{padding:16px} .bt-build h3{margin:16px 0 8px} .bt-build h3:first-child{margin-top:0}
+.bt-modes{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.bt-mode{position:relative;display:block;border:1px solid var(--border);border-radius:10px;padding:10px 12px;cursor:pointer;background:var(--page)}
+.bt-mode input{position:absolute;opacity:0;pointer-events:none}
+.bt-mode .k{font-family:ui-monospace,Consolas,monospace;font-weight:700;font-size:15px} .bt-mode .t{display:block;color:var(--ink2);font-size:12px}
+.bt-mode:has(input:checked){border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent)}
+.bt-mode:has(input:focus-visible){outline:2px solid var(--accent);outline-offset:2px}
+.bt-mode.real:has(input:checked){border-color:var(--bad);box-shadow:inset 0 0 0 1px var(--bad)} .bt-mode.real .k{color:var(--bad)}
+.bt-desc{color:var(--ink2);font-size:13px;margin:8px 0 0}
+.bt-strats{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:6px}
+.bt-chip{display:flex;gap:8px;align-items:flex-start;border:1px solid var(--border);border-radius:8px;padding:7px 9px;cursor:pointer}
+.bt-chip:has(input:checked){border-color:var(--accent);background:color-mix(in srgb,var(--accent) 8%,transparent)}
+.bt-chip input{margin:3px 0 0} .bt-chip b{display:block;font-size:13px} .bt-chip small{color:var(--ink2);font-size:11.5px;line-height:1.3;display:block}
+.bt-dur{display:flex;gap:12px;align-items:center} .bt-dur input{flex:1;accent-color:var(--accent)}
+.bt-dur output{min-width:150px;text-align:right;font-weight:620;font-variant-numeric:tabular-nums}
+.bt-opts{display:flex;flex-wrap:wrap;gap:10px 18px;align-items:center;font-size:13px}
+.bt-opts input[type=number]{width:84px;font:inherit;padding:3px 6px;border:1px solid var(--border);border-radius:6px;background:var(--page);color:var(--ink)}
+.bt-cmd{display:flex;gap:8px;align-items:stretch;margin-top:6px}
+.bt-cmd code{flex:1;display:block;background:#0c0c0c;color:#e8e8e8;border-radius:8px;padding:10px 12px;font:13px/1.4 ui-monospace,Consolas,monospace;
+  overflow-x:auto;white-space:pre} .bt-cmd code::before{content:"PS> ";color:#6fb6ff}
+.bt-btn{font:inherit;border:1px solid var(--border);background:var(--surface);color:var(--ink);border-radius:8px;padding:7px 14px;cursor:pointer}
+.bt-btn:disabled{opacity:.45;cursor:not-allowed} .bt-btn.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+.bt-actions{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:10px} .bt-msg{font-size:13px;margin:8px 0 0;min-height:1.4em}
+.bt-msg.err{color:var(--bad)}
+.bt-flow{position:sticky;top:90px;padding-top:110px} .bt-flow svg{display:block;width:64px;height:440px}
+.bt-flow path{fill:none;stroke:var(--muted);stroke-width:2;stroke-linecap:round;stroke-dasharray:6 10;opacity:.5;animation:bt-flow 2.6s linear infinite}
+.bt-flow polygon{fill:var(--muted);opacity:.5}
+.bt-running .bt-flow path{stroke:var(--accent);opacity:1;animation-duration:.7s} .bt-running .bt-flow polygon{fill:var(--accent);opacity:1}
+@keyframes bt-flow{to{stroke-dashoffset:-32}}
+@media (prefers-reduced-motion:reduce){.bt-flow path,.bt-health .bt-dot{animation:none}}
+.bt-side .kpis{grid-template-columns:repeat(auto-fill,minmax(130px,1fr))} .bt-side .kpi .v{font-size:18px}
+#bt-live{max-height:600px;overflow:auto}
+.bt-term:empty::before{content:"Output of a session started with \\"Run in dashboard\\" streams here.";color:#777}
+.bt-termhead{display:flex;justify-content:space-between;gap:10px;background:#1f1f1f;color:#cfcfcf;border-radius:10px 10px 0 0;padding:7px 12px;
+  font-size:12.5px;margin-top:10px;border:1px solid #333;border-bottom:0} .bt-termhead b{color:#fff}
+.bt-term{background:#0c0c0c;color:#d6d6d6;border:1px solid #333;border-top:0;font:12px/1.45 ui-monospace,Consolas,monospace;height:360px;overflow:auto;margin:0;padding:10px 12px;
+  border-radius:0 0 10px 10px;white-space:pre-wrap;word-break:break-word}
+"""
+
+BUILDER_JS = r"""
+(function(){
+  const CFG = JSON.parse(document.getElementById('bt-config').textContent);
+  const H = {'Content-Type': 'application/json', 'X-Pumpfun-Dashboard': '1'};
+  const $ = id => document.getElementById(id);
+  const root = $('bt-root'), slider = $('bt-dur'), term = $('bt-term');
+  const pick = {stream: CFG.stream.indexOf(60), replay: CFG.replay.indexOf(6)};
+  let lastFeed = null, cmd = '', runnable = false, job = null, next = 0, pending = null;
+
+  const mode = () => document.querySelector('input[name=bt-mode]:checked').value;
+  const feed = () => CFG.modes[mode()].feed;
+  const stops = () => feed() === 'stream' ? CFG.stream : CFG.replay;
+  function durText(v){
+    if (feed() === 'stream') return !v ? 'until you stop it' : v < 60 ? v + ' min' : (v / 60) + ' h live';
+    return !v ? 'all stored events' : v + ' h of market';
+  }
+  function spec(){
+    return {mode: mode(), duration: stops()[+slider.value],
+            strategies: Array.from(document.querySelectorAll('.bt-strats input:checked')).map(x => x.value),
+            compare: $('bt-compare').checked, flatten: $('bt-flatten').checked,
+            status_every: $('bt-status').value, capital_sol: $('bt-capital').value};
+  }
+  function msg(text, err){ const m = $('bt-msg'); m.textContent = text || ''; m.className = 'bt-msg' + (err ? ' err' : ' muted'); }
+  function buttons(){
+    const running = !!(job && job.running);
+    $('bt-run').disabled = !runnable || running;
+    $('bt-stop').disabled = !running || job.stopping;
+    root.classList.toggle('bt-running', running);
+  }
+  function update(){
+    const f = feed();
+    if (f !== lastFeed){ slider.max = stops().length - 1; slider.value = pick[f]; lastFeed = f; }
+    pick[f] = +slider.value;
+    $('bt-dur-v').textContent = durText(stops()[+slider.value]);
+    $('bt-dur-l').textContent = f === 'stream' ? '3 · How long to trade the live stream' : '3 · How much stored market to replay';
+    $('bt-desc').textContent = CFG.modes[mode()].desc;
+    document.querySelectorAll('[data-feed]').forEach(el => { el.hidden = el.dataset.feed !== f; });
+    $('bt-capital-w').hidden = mode() !== 'hfts';
+    const none = !document.querySelector('.bt-strats input:checked');
+    clearTimeout(pending);
+    pending = setTimeout(function(){
+      fetch('/api/builder/command', {method: 'POST', headers: H, body: JSON.stringify(spec())}).then(r => r.json()).then(function(r){
+        if (r.error){ cmd = ''; runnable = false; $('bt-cmd').textContent = '…'; msg(none ? 'Pick at least one strategy.' : r.error, true); }
+        else {
+          cmd = r.powershell; runnable = r.runnable; $('bt-cmd').textContent = cmd;
+          msg(r.runnable ? 'Run it here (output below), or copy it into a PowerShell window that loaded hft.ps1.'
+                         : 'Real money: the dashboard never starts live trading. Copy this into PowerShell yourself.', !r.runnable);
+        }
+        buttons();
+      }).catch(() => msg('The dashboard server is not reachable.', true));
+    }, 120);
+  }
+  root.addEventListener('input', update);
+  root.addEventListener('change', update);
+
+  $('bt-copy').addEventListener('click', function(){
+    if (!cmd) return;
+    const done = () => { const b = $('bt-copy'); b.textContent = 'Copied'; setTimeout(() => { b.textContent = 'Copy'; }, 1500); };
+    if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(cmd).then(done, () => {});
+    else { const r = document.createRange(); r.selectNodeContents($('bt-cmd')); const s = getSelection(); s.removeAllRanges(); s.addRange(r); }
+  });
+  $('bt-run').addEventListener('click', function(){
+    fetch('/api/jobs', {method: 'POST', headers: H, body: JSON.stringify(spec())}).then(r => r.json()).then(function(r){
+      if (r.error){ msg(r.error, true); return; }
+      term.textContent = ''; next = 0; poll();
+    });
+  });
+  $('bt-stop').addEventListener('click', function(){
+    fetch('/api/jobs/stop', {method: 'POST', headers: H}).then(() => poll());
+  });
+
+  function hhmm(ms){ return new Date(ms).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit', second: '2-digit'}); }
+  function poll(){
+    fetch('/api/jobs/current?since=' + next).then(r => r.json()).then(function(r){
+      if (r.job && job && r.job.id !== job.id){ term.textContent = ''; }
+      job = r.job;
+      if (r.lines && r.lines.length){
+        const atEnd = term.scrollHeight - term.scrollTop - term.clientHeight < 40;
+        term.textContent += (term.textContent ? '\n' : '') + r.lines.join('\n');
+        if (term.textContent.length > 400000) term.textContent = term.textContent.slice(-300000);
+        if (atEnd) term.scrollTop = term.scrollHeight;
+      }
+      next = r.next || 0;
+      $('bt-job').textContent = !job ? 'no session started from this page' :
+        job.running ? (job.stopping ? 'stopping ' : 'running ') + job.mode + ' since ' + hhmm(job.started_ms) :
+        job.mode + ' ended ' + (job.ended_ms ? hhmm(job.ended_ms) : '') + ' · exit code ' + job.exit_code;
+      buttons();
+    }).catch(() => {});
+  }
+  function live(){
+    fetch('/api/builder/live/html').then(r => r.text()).then(function(h){
+      const box = $('bt-live'), det = box.querySelector('details'), open = det && det.open;
+      box.innerHTML = h; if (open){ const d2 = box.querySelector('details'); if (d2) d2.open = true; }
+    }).catch(() => {});
+  }
+  const SESSION = {none: 'no trading session yet', starting: 'session starting', running: 'session running',
+                   ended: 'last session ended', stale: 'session not updating'};
+  function health(){
+    fetch('/api/health').then(r => r.json()).then(function(h){
+      const el = $('bt-health'), rpc = h.rpc || {};
+      el.dataset.level = h.level;
+      const who = rpc.provider || 'RPC';
+      const head = {ok: 'Connected to ' + who, slow: who + ' is slow', limited: who + ' is rate limiting',
+                    down: who + ' is not reachable', missing: 'No RPC configured'}[rpc.state] || who;
+      $('bt-health-t').textContent = head + (rpc.ms != null ? ' · ' + Math.round(rpc.ms) + ' ms' : '');
+      $('bt-health-d').textContent = [rpc.detail, rpc.ws === false ? 'SOLANA_WS_URL missing' : '', SESSION[h.session] || '']
+        .filter(Boolean).join(' · ');
+    }).catch(function(){ $('bt-health').dataset.level = 'bad'; $('bt-health-t').textContent = 'Dashboard server not reachable'; });
+  }
+  update(); poll(); live(); health();
+  setInterval(poll, 1000); setInterval(live, CFG.refresh_ms); setInterval(health, 10000);
+})();
+"""
+
+
+def _flow_svg() -> str:
+    paths, heads = [], []
+    # strategy builder (left) feeding the session (right): curves sweep up into the data panel
+    for i, (a, b) in enumerate([(70, 40), (140, 95), (210, 150), (280, 205), (350, 260), (410, 330)]):
+        paths.append(f"<path d='M3,{a} C40,{a} 22,{b} 54,{b}' style='animation-delay:-{i * 0.43:.2f}s'/>")
+        heads.append(f"<polygon points='53,{b - 5} 62,{b} 53,{b + 5}'/>")
+    return (f"<div class='bt-flow' aria-hidden='true'><svg viewBox='0 0 64 440'>"
+            f"{''.join(paths)}{''.join(heads)}</svg></div>")
+
+
+def page_builder(catalogue: list[dict[str, Any]], state: dict[str, Any] | None, refresh_ms: int, server: bool) -> str:
+    """Strategy builder: compose a ``trade`` command, run paper sessions, watch their data and raw output."""
+    if not server:
+        return ("<p class='muted'>The strategy builder starts trading sessions, so it needs the dashboard server: run "
+                "<code>hfts dashboard</code> and open http://127.0.0.1:8050/builder.</p>")
+    from pumpfun_hft.dashboard.builder import MODES, REPLAY_HOURS, STREAM_MINUTES
+
+    modes = "".join(
+        f"<label class='bt-mode{' real' if k == 'hftl' else ''}'><input type='radio' name='bt-mode' value='{k}'"
+        f"{' checked' if k == 'hfts' else ''}><span class='k'>{k}</span><span class='t'>{html.escape(m['title'])}</span></label>"
+        for k, m in MODES.items())
+    default = [s["name"] for s in catalogue if s["active"] and not s["needs_model"]][:1]
+    if not default and catalogue:
+        default = [catalogue[0]["name"]]
+    chips = "".join(
+        f"<label class='bt-chip'><input type='checkbox' value='{html.escape(s['name'])}'{' checked' if s['name'] in default else ''}>"
+        f"<span><b>{html.escape(s['label'])}</b><small>{html.escape(s['summary'])}"
+        f"{' · needs a model from train-model' if s['needs_model'] else ''}</small></span></label>"
+        for s in catalogue)
+    cfg = json.dumps({"modes": {k: {"feed": m["feed"], "desc": m["desc"]} for k, m in MODES.items()},
+                      "stream": list(STREAM_MINUTES), "replay": list(REPLAY_HOURS), "refresh_ms": refresh_ms}).replace("</", "<\\/")
+    build = (
+        "<section class='card bt-build' aria-label='Build a trading command'>"
+        "<h3>1 · Mode</h3><div class='bt-modes' role='radiogroup' aria-label='Mode'>" + modes + "</div>"
+        "<p class='bt-desc' id='bt-desc'></p>"
+        "<h3>2 · Strategies <span class='muted' style='font-weight:400'>(at least one; rug avoidance always runs as the exit overlay)</span></h3>"
+        "<div class='bt-strats'>" + chips + "</div>"
+        "<h3 id='bt-dur-l'>3 · Duration</h3><div class='bt-dur'><input type='range' id='bt-dur' min='0' max='15' step='1' "
+        "aria-labelledby='bt-dur-l'><output id='bt-dur-v' for='bt-dur'></output></div>"
+        "<h3>4 · Options</h3>"
+        "<div class='bt-opts' data-feed='stream'><label>status line every <input type='number' id='bt-status' value='10' min='0' "
+        "max='3600' step='1'> s</label><label><input type='checkbox' id='bt-flatten' checked> close positions when it stops</label>"
+        "<label id='bt-capital-w'>paper capital <input type='number' id='bt-capital' value='' placeholder='10' min='0.1' step='0.5'> SOL</label></div>"
+        "<div class='bt-opts' data-feed='replay' hidden><label><input type='checkbox' id='bt-compare' checked> "
+        "also backtest the same events and compare</label></div>"
+        "<h3>5 · Command</h3><div class='bt-cmd'><code id='bt-cmd'>…</code>"
+        "<button type='button' class='bt-btn' id='bt-copy'>Copy</button></div>"
+        "<div class='bt-actions'><button type='button' class='bt-btn primary' id='bt-run' disabled>Run in dashboard</button>"
+        "<button type='button' class='bt-btn' id='bt-stop' disabled>Stop</button></div>"
+        "<p class='bt-msg muted' id='bt-msg' role='status'></p></section>")
+    side = ("<section class='bt-side'><div class='card'><h3>Session data: open positions, PnL, latency</h3>"
+            f"<div id='bt-live'>{live_body(state, server=True)}</div></div>"
+            "<div class='bt-termhead'><b>PowerShell output (raw stream)</b><span id='bt-job'></span></div>"
+            "<pre class='bt-term' id='bt-term'></pre></section>")
+    top = ("<div class='bt-top'><p class='sub'>Pick a mode, strategies and a duration; the command is built for you. "
+           "Built around <b>hfts</b>: paper trading on the live stream.</p>"
+           "<div class='bt-health' id='bt-health' data-level='unknown' role='status'><span class='bt-dot'></span>"
+           "<div><b id='bt-health-t'>Checking connection…</b><small id='bt-health-d'></small></div></div></div>")
+    return (f"<style>{BUILDER_CSS}</style><div id='bt-root'>{top}<div class='bt-grid'>{build}{_flow_svg()}{side}</div></div>"
+            f"<script type='application/json' id='bt-config'>{cfg}</script><script>{BUILDER_JS}</script>")

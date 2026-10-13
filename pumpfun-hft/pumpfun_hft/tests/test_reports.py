@@ -178,7 +178,7 @@ def dash(tmp_settings: Any, backtest_result: BacktestResult, events: pl.DataFram
 
 def test_every_dashboard_page_renders(dash: Any) -> None:
     client, _, _, r = dash
-    assert len(PAGES) == 10
+    assert len(PAGES) == 11
     for key, label in PAGES:
         resp = client.get(f"/{key}", params={"run": r.run_id})
         assert resp.status_code == 200, key
