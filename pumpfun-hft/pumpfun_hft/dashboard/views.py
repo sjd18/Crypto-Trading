@@ -341,6 +341,24 @@ def page_live(state: dict[str, Any] | None, refresh_ms: int, server: bool) -> st
     return f"<div id='lv-root'>{live_body(state, server)}</div>{poll}"
 
 
+#: Open positions columns, in display order (snapshot keys of LiveTrader.snapshot()["positions"])
+POSITION_COLUMNS = ("mint", "strategy", "tokens", "value_sol", "cost_sol", "ret", "entry_ms")
+
+
+def _positions_frame(positions: list[dict[str, Any]]) -> pl.DataFrame:
+    """Open positions newest first, with exactly the columns of the table (missing keys of old snapshots -> null)."""
+    if not positions:
+        return pl.DataFrame()
+    from pumpfun_hft.core.types import TOKEN_UNIT
+
+    rows = [{c: p.get(c) for c in POSITION_COLUMNS} for p in positions]
+    for r in rows:  # snapshots carry raw base units; show whole tokens (6 decimals)
+        r["tokens"] = None if r["tokens"] is None else r["tokens"] / TOKEN_UNIT
+    schema = {"mint": pl.String, "strategy": pl.String, "tokens": pl.Float64, "value_sol": pl.Float64, "cost_sol": pl.Float64,
+              "ret": pl.Float64, "entry_ms": pl.Int64}
+    return pl.DataFrame(rows, schema=schema).sort("entry_ms", descending=True, nulls_last=True)
+
+
 def live_body(state: dict[str, Any] | None, server: bool) -> str:
     """Content of the Live monitor for one snapshot of the trading session (``LiveTrader.snapshot``)."""
     if not state:
@@ -381,16 +399,19 @@ def live_body(state: dict[str, Any] | None, server: bool) -> str:
     lat = v.get("latency", {})
     lat_df = pl.DataFrame([{"channel": k, **{kk: vv for kk, vv in d.items() if kk in ("count", "p50", "p90", "p99", "max", "budget_ms", "breaches")}}
                            for k, d in lat.items()], infer_schema_length=None) if lat else pl.DataFrame()
-    pos_df = pl.DataFrame(v.get("positions") or [], infer_schema_length=None) if v.get("positions") else pl.DataFrame()
+    pos_df = _positions_frame(v.get("positions") or [])
     brk = (v.get("risk") or {}).get("breakers") or {}
     brk_df = (pl.DataFrame([{"breaker": k, "active": bool(d.get("active")), "trips": int(d.get("trips") or 0), "reason": str(d.get("reason") or "")}
                             for k, d in brk.items()]) if brk else pl.DataFrame())
     lat_fmt = {**{k: "num1" for k in ("p50", "p90", "p99", "max", "budget_ms")}, "count": "int", "breaches": "int"}
     lat_hdr = {"budget_ms": "budget", "breaches": "over budget"}
-    pos_fmt = {"mint": "addr", "value_sol": "sol", "cost_sol": "sol", "ret": "pct_s", "entry_ms": "datetime", "tokens": "int"}
+    pos_fmt = {"mint": "mono", "strategy": "text", "tokens": "num2", "value_sol": "sol", "cost_sol": "sol", "ret": "pct_c",
+               "entry_ms": "time_cs"}
+    pos_hdr = {"value_sol": "value (SOL)", "cost_sol": "cost (SOL)", "ret": "return", "entry_ms": "entry (UTC)"}
     return (f"{data}{status}<div class='kpis'>{tiles_html}</div>"
-            f"<div class='grid2'><div class='card'><h3>Open positions</h3>{C.html_table(pos_df, formats=pos_fmt)}</div>"
-            f"<div class='card'><h3>Circuit breakers</h3>{C.html_table(brk_df, scroll=False)}</div></div>"
+            f"<div class='card'><h3>Open positions{f' ({pos_df.height})' if pos_df.height else ''}</h3>"
+            f"{C.html_table(pos_df, formats=pos_fmt, headers=pos_hdr)}</div>"
+            f"<div class='card'><h3>Circuit breakers</h3>{C.html_table(brk_df, scroll=False)}</div>"
             f"<div class='card'><h3>Latency (ms)</h3>{C.html_table(lat_df, formats=lat_fmt, headers=lat_hdr, scroll=False)}</div>"
             f"<details class='card'><summary>Raw snapshot</summary><pre style='white-space:pre-wrap;font-size:11px;max-height:360px;overflow:auto'>"
             f"{html.escape(json.dumps(v, indent=1, default=str)[:20000])}</pre></details>")

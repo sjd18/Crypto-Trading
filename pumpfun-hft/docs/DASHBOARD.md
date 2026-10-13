@@ -26,7 +26,7 @@ synthetic and real runs are listed separately. Both use the same port: run one a
 | Token explorer | price path of a traded token with our buys and sells, every token seen with its point-in-time outcome |
 | Feature importance | model-native, permutation and SHAP importance of the latest trained model |
 | Strategy comparison | indexed equity of the last 8 runs, metrics side by side |
-| Live monitor | the running paper / live session (`hfts trade`, `hftl trade`, `hftr trade`): profile, equity, return, realised PnL, closed trades and win rate, open positions, fills / failed, stream events and reconnects, queue, latency percentiles and breaker state. The whole page refreshes every `dashboard.live_refresh_ms` from `/api/live/html`. Start the dashboard with the same command as the session (`hfts dashboard`) so it reads that data set |
+| Live monitor | the running paper / live session (`hfts trade`, `hftl trade`, `hftr trade`): profile, equity, return, realised PnL, closed trades and win rate, open positions (newest first: full mint, strategy, tokens, value and cost in SOL, return in green / red, entry time in UTC to the hundredth of a second), fills / failed, stream events and reconnects, queue, latency percentiles and breaker state. The whole page refreshes every `dashboard.live_refresh_ms` from `/api/live/html`. Start the dashboard with the same command as the session (`hfts dashboard`) so it reads that data set |
 
 JSON endpoints: `/api/runs`, `/api/runs/{run_id}/metrics`, `/api/runs/{run_id}/equity`,
 `/api/live` (plus `/api/live/html`, the rendered Live monitor); interactive API docs at `/api/docs`.

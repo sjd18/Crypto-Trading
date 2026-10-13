@@ -234,6 +234,31 @@ def test_live_monitor_refreshes_its_whole_body(dash: Any) -> None:
         meta.set_state("live", old)
 
 
+def test_open_positions_table(dash: Any) -> None:
+    client, _, meta, _ = dash
+    old = meta.all_state()["live"]["value"]
+    win, loss = "W" * 44, "L" * 44
+    meta.set_state("live", {**old, "positions": [
+        {"mint": win, "strategy": "sniper", "tokens": 1_234_567_890_000, "value_sol": 0.1234, "cost_sol": 0.1, "ret": 0.234,
+         "entry_ms": 1_788_000_000_000 + 123, "creator": "not shown"},
+        {"mint": loss, "strategy": EVIL, "tokens": 10, "value_sol": 0.05, "cost_sol": 0.1, "ret": -0.5,
+         "entry_ms": 1_788_000_000_000 + 4_567}]})
+    try:
+        body = client.get("/api/live/html").text
+        table = body.split("Open positions (2)", 1)[1].split("Circuit breakers", 1)[0]
+        heads = [h.split(">", 1)[1] for h in table.split("</th>")[:-1]]
+        assert [h.rsplit(">", 1)[-1] for h in heads] == ["mint", "strategy", "tokens", "value (SOL)", "cost (SOL)", "return",
+                                                         "entry (UTC)"]
+        assert f">{win}<" in table and f">{loss}<" in table and "not shown" not in table   # full mint, nothing extra
+        assert 'class="pos" data-v="0.234">+23.40%' in table and 'class="neg" data-v="-0.5">-50.00%' in table
+        assert ">10:40:00.12<" in table and ">10:40:04.56<" in table                        # hundredths of a second
+        assert table.index(loss) < table.index(win)                                          # newest entry first
+        assert ">1,234,567.89<" in table and "0.1234" in table  # whole tokens, not base units
+        assert_safe(body)
+    finally:
+        meta.set_state("live", old)
+
+
 def test_run_ids_are_escaped(dash: Any) -> None:
     client, s, _, r = dash
     hostile = "x' autofocus onfocus='alert(1)"  # a directory name is just another untrusted string

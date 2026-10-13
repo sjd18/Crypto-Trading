@@ -341,14 +341,15 @@ def short_addr(a: str, head: int = 4, tail: int = 4) -> str:
 
 
 def fmt_value(v: Any, kind: str | None, digits: int = 4) -> str:
-    """Format one cell. Kinds: pct, pct_s, sol, sol_s, int, num1, num2, bps, ms, time, datetime, addr, sci,
-    lamports_sol, text."""
+    """Format one cell. Kinds: pct, pct_s, pct_c (signed, coloured green / red by html_table), sol, sol_s, int,
+    num1, num2, bps, ms, time, time_cs (UTC time to the hundredth of a second), datetime, addr (shortened),
+    mono (full address in monospace), sci, lamports_sol, text."""
     if v is None or (isinstance(v, float) and math.isnan(v)):
         return "–"
     try:
         if kind == "pct":
             return f"{100 * float(v):.2f}%"
-        if kind == "pct_s":
+        if kind in ("pct_s", "pct_c"):
             return f"{100 * float(v):+.2f}%"
         if kind == "sol":
             return f"{float(v):,.4f}"
@@ -364,6 +365,11 @@ def fmt_value(v: Any, kind: str | None, digits: int = 4) -> str:
             return f"{float(v):+,.1f} bps"
         if kind == "ms":
             return f"{float(v):,.0f} ms"
+        if kind == "time_cs":
+            from datetime import UTC, datetime
+
+            ms = int(v)
+            return f"{datetime.fromtimestamp(ms // 1000, UTC):%H:%M:%S}.{ms % 1000 // 10:02d}"
         if kind in ("time", "datetime"):
             from datetime import UTC, datetime
 
@@ -382,7 +388,7 @@ def fmt_value(v: Any, kind: str | None, digits: int = 4) -> str:
     return fmt_num(v, digits)
 
 
-_TEXT_KINDS = {"text", "addr"}
+_TEXT_KINDS = {"text", "addr", "mono"}
 
 
 def html_table(df: pl.DataFrame, max_rows: int = 500, digits: int = 4, formats: dict[str, str] | None = None,
@@ -404,7 +410,9 @@ def html_table(df: pl.DataFrame, max_rows: int = 500, digits: int = 4, formats: 
         for v, k in zip(row, kinds, strict=True):
             raw = "" if v is None else str(v)
             shown = _html.escape(fmt_value(v, k, digits))
-            cls = "addr" if k == "addr" else "txt" if k == "text" else ""
+            cls = "addr" if k in ("addr", "mono") else "txt" if k == "text" else ""
+            if k == "pct_c" and isinstance(v, (int, float)) and v == v and v != 0:
+                cls = "pos" if v > 0 else "neg"
             title = f' title="{_html.escape(raw, quote=True)}"' if k == "addr" else ""
             cells.append(f'<td class="{cls}" data-v="{_html.escape(raw, quote=True)}"{title}>{shown}</td>')
         body.append("<tr>" + "".join(cells) + "</tr>")
