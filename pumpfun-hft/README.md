@@ -112,7 +112,10 @@ trades and win rate, realised PnL, equity, fills / failed; `--status-every N`, 0
 `hfts dashboard` in a second terminal shows the same on the Live monitor page. The dashboard's
 **Strategy builder** tab composes these commands by clicking (mode, strategies, duration), runs the
 paper modes with their output on the page, and shows a status light for the RPC connection; it
-never starts `hftl` (see [docs/DASHBOARD.md](docs/DASHBOARD.md)). Since
+never starts `hftl` (see [docs/DASHBOARD.md](docs/DASHBOARD.md)). Every `hfts` / `hftl` session is
+saved and broken down per strategy on the **Recent Session Breakdown** tab, and the **Strategy
+Parameters** tab tunes a strategy on the recorded real data (Bayesian optimisation, honest
+train / validation splits) and saves the result for `hfts` to use. Since
 PowerShell command names ignore case, live trading is `hftl`, not `HFTS`. Without `hft.ps1`:
 `python -m pumpfun_hft.main --profile hfts trade --minutes 120`.
 

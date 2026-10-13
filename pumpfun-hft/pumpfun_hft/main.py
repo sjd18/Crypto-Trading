@@ -89,7 +89,15 @@ def main(ctx: typer.Context,
     if name:
         root = data_root.expanduser().resolve() if data_root is not None else load_settings(config, overrides).datasets.root(name)
         # every path of the data set lives in its folder; explicit --set values still win
-        overrides = {**dataset_path_overrides(root), **overrides, "datasets.active": name}
+        tuned: dict[str, Any] = {}
+        if profile == "hfts":  # paper trading on the stream uses the parameters saved from the Strategy Parameters page
+            from pumpfun_hft.optimizer.tuned import load_tuned, tuned_overrides
+
+            tuned = load_tuned(root)
+        STATE["tuned"] = tuned
+        overrides = {**dataset_path_overrides(root), **(tuned_overrides(tuned) if tuned else {}), **overrides, "datasets.active": name}
+    else:
+        STATE["tuned"] = {}
     settings = load_settings(config, overrides)
     STATE.update(settings=settings, config_path=config, overrides=overrides)
     lg = settings.logging
@@ -693,23 +701,87 @@ def backtest(strategy: list[str] = typer.Option(None, "--strategy", help="Strate
 
 
 @app.command()
-def optimize(strategy: str = typer.Option(..., help="Strategy with an optimizer.spaces entry"),
+def optimize(strategy: str = typer.Option(..., help="Strategy to tune (one without an optimizer.spaces entry gets a space "
+                                                     "around its current parameters)"),
              method: str = typer.Option(None, help="grid | random | bayesian | genetic"), trials: int = typer.Option(None),
-             workers: int = typer.Option(None), final: bool = typer.Option(False, help="Unseal test + live-sim for the final estimate")) -> None:
+             workers: int = typer.Option(None), final: bool = typer.Option(False, help="Unseal test + live-sim for the final estimate"),
+             last_hours: float = typer.Option(0.0, help="Only the most recent N hours of events (0 = all)"),
+             objective: str = typer.Option(None, help="sharpe | sortino | profit_factor | expectancy | calmar | total_return | composite")) -> None:
     """Optimise on train, select on validation; DSR / PBO; optional sealed test evaluation."""
+    from pumpfun_hft.optimizer.space import derive_space
     from pumpfun_hft.optimizer.study import OptimizationStudy
 
+    s = S()
+    if strategy not in _known_strategies():
+        raise typer.BadParameter(f"unknown strategy {strategy!r}")
+    opt_update: dict[str, Any] = {}
+    space_source = "configured"
+    if strategy not in s.optimizer.spaces:
+        derived = derive_space(dict(s.strategy.params.get(strategy, {})))
+        if not derived:
+            raise typer.BadParameter(f"{strategy} has no numeric parameters to tune")
+        opt_update["spaces"] = {**s.optimizer.spaces, strategy: derived}
+        space_source = "derived"
+        console.print(f"{strategy} has no optimizer.spaces entry: tuning {', '.join(derived)} around the current values")
+    if objective:
+        opt_update["objective"] = objective
+    if opt_update:
+        s = s.model_copy(update={"optimizer": s.optimizer.model_copy(update=opt_update)})
     events = _load_events(None, None)
+    if last_hours:
+        events = events.filter(pl.col("ts_ms") >= int(events["ts_ms"].max()) - int(last_hours * 3_600_000))
+    console.print(f"{events.height:,} events, {ms_to_iso(int(events['ts_ms'].min()))} -> {ms_to_iso(int(events['ts_ms'].max()))}; "
+                  f"objective {s.optimizer.objective}; method {method or s.optimizer.method}", soft_wrap=True)
     _ml_cutoff_notice([strategy], events)
-    res = OptimizationStudy(S(), events, str(_metadata_path()), strategy, method, trials, None, workers).run(final_evaluation=final)
-    out = S().paths.resolve("reports_dir") / "optimize" / res.study_id
+    space = s.optimizer.spaces[strategy]
+    current = dict(s.strategy.params.get(strategy, {}))
+    baseline = {k: current[k] for k in space if k in current}
+    from pumpfun_hft.dashboard.trading_views import score_text
+
+    n_search = trials or s.optimizer.n_trials
+    expected = {"search": n_search, "current parameters": 1, "validation": s.optimizer.top_k + (1 if baseline else 0)}
+    t_start = time.monotonic()
+    console.print(f"searching {n_search} parameter sets on the training period (each is a full backtest; "
+                  f"{workers or s.optimizer.n_workers} in parallel), then checking the best {s.optimizer.top_k} on the "
+                  "validation period", soft_wrap=True)
+
+    def progress(phase: str, n: int, score: float, best: float, info: dict[str, Any] | None = None) -> None:
+        if phase == "splits" and info:
+            how = ("by event count (the recording has gaps, so clock-time splits could be empty)" if info["mode"] == "events"
+                   else "by time")
+            console.print(f"splits {how}: " + ", ".join(f"{k} {v:,} events" for k, v in info["events"].items())
+                          + f" · embargo {info.get('embargo_s', 0):g} s", soft_wrap=True)
+            for w in info["windows"]:
+                console.print(f"  {w}", soft_wrap=True)
+            return
+        console.print(f"  {phase} {n}/{expected.get(phase, '?')} · score {score_text(score, s.optimizer.min_trades)} · best "
+                      f"{score_text(best, s.optimizer.min_trades)} · {(time.monotonic() - t_start) / 60:.1f} min", soft_wrap=True)
+
+    res = OptimizationStudy(s, events, str(_metadata_path()), strategy, method, trials, None, workers, progress=progress).run(
+        final_evaluation=final, baseline=baseline or None)
+    out = s.paths.resolve("reports_dir") / "optimize" / res.study_id
     out.mkdir(parents=True, exist_ok=True)
     res.trials_frame().write_parquet(out / "trials.parquet")
     summary = {k: getattr(res, k) for k in ("study_id", "strategy", "method", "splits", "selected_params", "selected_train_metrics",
-                                            "selected_val_metrics", "dsr", "pbo", "test_metrics", "live_sim_metrics", "unseal_log")}
+                                            "selected_val_metrics", "dsr", "pbo", "test_metrics", "live_sim_metrics", "unseal_log",
+                                            "selected_train_score", "selected_val_score", "baseline_params", "baseline_train_metrics",
+                                            "baseline_val_metrics", "baseline_train_score", "baseline_val_score", "split_mode", "split_events")}
+    summary.update(objective=s.optimizer.objective, dataset=s.datasets.active or _kind_on_disk(), created_ms=int(time.time() * 1000),
+                   data_start_ms=int(events["ts_ms"].min()), data_end_ms=int(events["ts_ms"].max()), n_events=events.height,
+                   n_trials=len(res.trials), space_source=space_source,
+                   space={k: v.model_dump(exclude_none=True) for k, v in space.items()})
     (out / "study.json").write_text(jsonutil.dumps(summary))
     console.print_json(json.dumps({k: summary[k] for k in ("selected_params", "dsr", "pbo", "test_metrics")}, default=str))
+    if res.baseline_val_score is not None:
+        console.print(f"validation score ({s.optimizer.objective}): tuned {res.selected_val_score:.4f} vs current "
+                      f"{res.baseline_val_score:.4f}")
     console.print(f"saved {out}")
+
+
+def _known_strategies() -> set[str]:
+    from pumpfun_hft.strategies import STRATEGY_REGISTRY
+
+    return set(STRATEGY_REGISTRY)
 
 
 @app.command()
@@ -1030,6 +1102,23 @@ def _run_trader(paper: bool, strategies: list[str], minutes: float, flatten_on_e
                   f"{f' for {minutes:g} min' if minutes else ' until Ctrl-C'}"
                   f"{f'; status every {status_every:g} s' if status_every > 0 else ''}.")
     console.print(f"[dim]Dashboard: run `{_cli()} dashboard` in another terminal and open the Live monitor page.[/]")
+    names = [st.name for st in trader.runtime.strategies]
+    tuned = {k: v for k, v in (STATE.get("tuned") or {}).items() if k in names}
+    for k, v in tuned.items():
+        console.print(f"tuned parameters for {k}: {', '.join(f'{p}={x:g}' if isinstance(x, float) else f'{p}={x}' for p, x in v['params'].items())} "
+                      f"[dim](study {v.get('study_id', '?')}; reset on the dashboard's Strategy Parameters page)[/]", soft_wrap=True)
+    from pumpfun_hft.execution.sessions import SessionRecorder, market_stats
+
+    recorder = SessionRecorder(trader, s.paths.resolve("reports_dir") / "sessions", STATE.get("profile") or "",
+                               {k: v.get("study_id") for k, v in tuned.items()})
+
+    async def archive() -> None:
+        while True:
+            await asyncio.sleep(30)
+            try:
+                recorder.save()
+            except Exception as exc:  # noqa: BLE001 - archiving must never stop trading
+                log.warning("session save failed", extra={"data": {"error": repr(exc)[:200]}})
 
     async def report() -> None:
         while True:
@@ -1041,6 +1130,7 @@ def _run_trader(paper: bool, strategies: list[str], minutes: float, flatten_on_e
         tasks = [asyncio.create_task(collector.run()), asyncio.create_task(trader.run())]
         if status_every > 0:
             tasks.append(asyncio.create_task(report()))
+        tasks.append(asyncio.create_task(archive()))
         if "bh" in holder:
             holder["bh"].start()
             holder["prio"].start()
@@ -1063,6 +1153,16 @@ def _run_trader(paper: bool, strategies: list[str], minutes: float, flatten_on_e
         asyncio.run(run())
     except KeyboardInterrupt:
         console.print("stopped")
+    try:
+        market = market_stats(_store(), recorder.started_ms, int(time.time() * 1000) + 1)
+    except Exception as exc:  # noqa: BLE001 - the session is saved without market statistics
+        log.warning("session market statistics failed", extra={"data": {"error": repr(exc)[:200]}})
+        market = None
+    try:
+        d = recorder.save(final=True, market=market)
+        console.print(f"session saved: {escape(str(d))} (dashboard: Recent Session Breakdown)", soft_wrap=True)
+    except Exception as exc:  # noqa: BLE001
+        console.print(f"[yellow]could not save the session: {escape(str(exc))}[/]")
     if trader.last_snapshot is not None:
         console.print(f"[bold]final[/] {_status_line(trader.last_snapshot)}", soft_wrap=True)
     _ml_funnel(trader.runtime)

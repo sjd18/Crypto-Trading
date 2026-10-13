@@ -6,12 +6,14 @@ Purpose
 
 Architecture
     space.py        ParamSpace: float / int / log-float / categorical; sampling, grids, [0,1]^d encoding
+                    derive_space: a space around current parameters for strategies without one
     search.py       grid, random, Bayesian (GP Matérn-5/2 + EI, constant-liar batches), genetic
     objective.py    objective functions with min-trade and max-drawdown constraints
     splits.py       embargoed train / validation / test / live-sim splits (test & live-sim sealed),
                     rolling or anchored walk-forward folds
     overfitting.py  Probabilistic & Deflated Sharpe Ratio, PBO via CSCV
     study.py        OptimizationStudy and WalkForwardAnalysis (process-pool evaluation)
+    tuned.py        tuned_params.json: parameters saved from a study for hfts (load / save / overrides)
 
 Data flow
     events -> make_splits -> search(train) -> top-k -> validation selection -> DSR/PBO

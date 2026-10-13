@@ -302,6 +302,27 @@ h1{font-size:24px;margin:0 0 4px;font-weight:650} h2{font-size:17px;margin:28px 
 nav.tabs{display:flex;gap:6px;flex-wrap:wrap;margin:10px 0 4px} nav.tabs button{border:1px solid var(--border);background:var(--surface);color:var(--ink);
   border-radius:8px;padding:6px 10px;font:inherit;cursor:pointer} nav.tabs button.on{border-color:var(--accent);color:var(--accent);font-weight:600}
 .tab{display:none} .tab.on{display:block} footer{color:var(--muted);font-size:12px;margin-top:28px}
+.pwrap{container-type:inline-size}
+.ptbl{width:100%;border-collapse:collapse;table-layout:fixed;font-size:13px;font-variant-numeric:tabular-nums}
+.ptbl th{font-size:11px;font-weight:600;color:var(--ink2);text-transform:uppercase;letter-spacing:.04em;text-align:right;
+  padding:0 8px 8px;border-bottom:1px solid var(--grid)} .ptbl th.l{text-align:left}
+.ptbl td{padding:10px 8px;border-bottom:1px solid var(--grid);vertical-align:middle;text-align:right;white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis} .ptbl tr:last-child td{border-bottom:0}
+.ptbl td.l{text-align:left} .ptbl td.pm{font-family:ui-monospace,Consolas,monospace;font-size:12px;white-space:normal;
+  overflow-wrap:anywhere;line-height:1.35} .ptbl small{color:var(--muted);font-size:11px;margin-left:2px}
+.pill{display:inline-block;max-width:100%;padding:2px 9px;border-radius:999px;font-size:12px;font-weight:600;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap;vertical-align:middle;color:var(--accent);background:color-mix(in srgb,var(--accent) 13%,transparent)}
+.sig{display:inline-block;min-width:64px;padding:2px 8px;border-radius:6px;font-weight:650;text-align:right}
+.sig.up{color:var(--good);background:color-mix(in srgb,var(--good) 13%,transparent)}
+.sig.down{color:var(--bad);background:color-mix(in srgb,var(--bad) 13%,transparent)} .sig.flat{color:var(--ink2)}
+@container (max-width:900px){
+  .ptbl,.ptbl tbody,.ptbl tr,.ptbl td{display:block;width:auto} .ptbl colgroup,.ptbl thead{display:none}
+  .ptbl tr{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px 14px;padding:12px 0;border-bottom:1px solid var(--grid)}
+  .ptbl tr:last-child{border-bottom:0} .ptbl td{border:0;padding:0;text-align:left} .ptbl td.pm{grid-column:1/-1;font-size:12.5px}
+  .ptbl td::before{content:attr(data-l);display:block;color:var(--muted);font-size:10.5px;text-transform:uppercase;letter-spacing:.04em}
+  .ptbl td.pm::before,.ptbl td.ps::before{display:none} .ptbl td.pm{grid-column:1/4} .ptbl td.ps{grid-column:4/6;text-align:right}
+  .ptbl td{overflow:visible}}
+@container (max-width:520px){.ptbl tr{grid-template-columns:repeat(3,minmax(0,1fr))} .ptbl td.pm,.ptbl td.ps{grid-column:1/-1;text-align:left}}
 """
 
 TABLE_JS = """
@@ -341,7 +362,7 @@ def short_addr(a: str, head: int = 4, tail: int = 4) -> str:
 
 
 def fmt_value(v: Any, kind: str | None, digits: int = 4) -> str:
-    """Format one cell. Kinds: pct, pct_s, pct_c (signed, coloured green / red by html_table), sol, sol_s, int,
+    """Format one cell. Kinds: pct, pct_s, pct_c (signed, coloured green / red by html_table), sol, sol_s, sol_c, int,
     num1, num2, bps, ms, time, time_cs (UTC time to the hundredth of a second), datetime, addr (shortened),
     mono (full address in monospace), sci, lamports_sol, text."""
     if v is None or (isinstance(v, float) and math.isnan(v)):
@@ -353,7 +374,7 @@ def fmt_value(v: Any, kind: str | None, digits: int = 4) -> str:
             return f"{100 * float(v):+.2f}%"
         if kind == "sol":
             return f"{float(v):,.4f}"
-        if kind == "sol_s":
+        if kind in ("sol_s", "sol_c"):
             return f"{float(v):+,.4f}"
         if kind == "int":
             return f"{int(v):,}"
@@ -411,7 +432,7 @@ def html_table(df: pl.DataFrame, max_rows: int = 500, digits: int = 4, formats: 
             raw = "" if v is None else str(v)
             shown = _html.escape(fmt_value(v, k, digits))
             cls = "addr" if k in ("addr", "mono") else "txt" if k == "text" else ""
-            if k == "pct_c" and isinstance(v, (int, float)) and v == v and v != 0:
+            if k in ("pct_c", "sol_c") and isinstance(v, (int, float)) and v == v and v != 0:
                 cls = "pos" if v > 0 else "neg"
             title = f' title="{_html.escape(raw, quote=True)}"' if k == "addr" else ""
             cells.append(f'<td class="{cls}" data-v="{_html.escape(raw, quote=True)}"{title}>{shown}</td>')

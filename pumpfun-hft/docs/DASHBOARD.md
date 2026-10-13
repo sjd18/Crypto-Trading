@@ -17,6 +17,8 @@ synthetic and real runs are listed separately. Both use the same port: run one a
 | Page | Shows |
 |---|---|
 | Strategy builder | build and run a trading session: pick the mode (`hft`, `hftr`, `hfts` (default), `hftl`), one or more strategies from `strategies/`, a duration and options; the page shows the exact PowerShell command (Copy) and can run it (**Run in dashboard**, **Stop**). Beside it: a status light for the RPC connection (e.g. Helius) and the session, the session's data (positions, PnL, latency) and its raw PowerShell output. See below |
+| Recent Session Breakdown | every saved `hfts` / `hftl` session (dropdown): return, PnL, trades, win rate, profit factor, fills, streamed events; a per-strategy table (trades, wins, win rate, PnL, average / best / worst return, profit factor, holding time, costs, buy signals vs orders sent); PnL by strategy, cumulative PnL per strategy, equity and drawdown; exit reasons; what became of each strategy's buy signals; market activity recorded in the session window; the parameters each strategy ran with; every closed trade; CSV downloads |
+| Strategy Parameters | tune one strategy on the recorded real events (Bayesian optimisation by default) with a run-time estimate, live optimiser output, every study of the strategy with current vs tuned metrics on train and validation, plain-language verdicts, Deflated Sharpe and PBO, the strategy's pooled live paper record, and **Save for hfts** |
 | Overview | headline KPIs, equity and drawdown, per-strategy breakdown, provenance |
 | Trades | every closed trade, exit-reason summary, every fill and failed attempt (sortable) |
 | Equity curve | zoomable equity with drawdown panel, monthly returns |
@@ -30,6 +32,28 @@ synthetic and real runs are listed separately. Both use the same port: run one a
 
 JSON endpoints: `/api/runs`, `/api/runs/{run_id}/metrics`, `/api/runs/{run_id}/equity`,
 `/api/live` (plus `/api/live/html`, the rendered Live monitor); interactive API docs at `/api/docs`.
+
+### Session archive (Recent Session Breakdown)
+
+Every `hfts trade` / `hftl trade` session (also `paper` / `live`) is saved to
+`<real data set>/reports/sessions/<profile>-<UTC start>/`: `session.json` (strategies, parameters,
+tuned study ids, summary, signal outcomes, market statistics of the window), `trades.parquet`,
+`fills.parquet`, `equity.parquet`, `signals.parquet`. The files are rewritten every 30 s while the
+session runs (a crash loses at most that much; such a session shows as *interrupted*) and once more
+when it ends. Market volume counts bonding-curve trades only: PumpSwap pool events are counted but
+not summed, because some carry the pool's other asset in `sol_amount`. The streamed events
+themselves are in the real data set, so `hftr backtest --start … --end …` replays any session window.
+
+### Strategy Parameters
+
+Pick a strategy, the recorded data to use (last 6 h … all), the search method, objective, trials
+and workers; **Run optimisation** runs `hftr optimize …` (see docs/RESEARCH_WORKFLOW.md) and streams
+its progress. Each finished study shows the tuned parameters next to the current ones, both scored
+on the same train and validation periods, with a verdict: *beat the current parameters on unseen
+data*, *less bad but still losing*, *possibly overfit* (PBO above 50 %) or *not enough trades to
+judge* (saving is then disabled). **Save for hfts** writes the parameters to `tuned_params.json`;
+`hfts` sessions load them (and say so), **Remove** goes back to the configured parameters. Only
+studies on the real (recorded) data can be saved.
 
 ### Strategy builder
 

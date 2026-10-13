@@ -11,6 +11,13 @@ import polars as pl
 import pytest
 
 os.environ.setdefault("PUMPFUN_DISABLE_NUMBA", "0")
+# hft.ps1 exports the data-set folders and config of the user's own setup; tests must never read or write them
+import tempfile  # noqa: E402
+
+_ISOLATED = Path(tempfile.mkdtemp(prefix="pumpfun-tests-"))
+os.environ["HFT_REAL_DIR"] = str(_ISOLATED / "real")
+os.environ["HFT_SYNTH_DIR"] = str(_ISOLATED / "synthetic")
+os.environ.pop("HFT_CONFIG", None)
 
 from pumpfun_hft.core.config import Settings, load_settings  # noqa: E402
 

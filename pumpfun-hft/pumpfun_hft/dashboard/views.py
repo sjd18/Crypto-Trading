@@ -22,7 +22,8 @@ from pumpfun_hft.analytics.report import EXIT_FORMATS, EXIT_HEADERS, TRADE_FORMA
 from pumpfun_hft.backtester.results import BacktestResult
 from pumpfun_hft.utils.timeutil import ms_to_iso
 
-PAGES = [("builder", "Strategy builder"), ("overview", "Overview"), ("trades", "Trades"), ("equity", "Equity curve"), ("drawdown", "Drawdown"),
+PAGES = [("builder", "Strategy builder"), ("sessions", "Recent Session Breakdown"), ("params", "Strategy Parameters"),
+         ("overview", "Overview"), ("trades", "Trades"), ("equity", "Equity curve"), ("drawdown", "Drawdown"),
          ("heatmaps", "Heatmaps"), ("wallets", "Wallet explorer"), ("tokens", "Token explorer"),
          ("features", "Feature importance"), ("strategies", "Strategy comparison"), ("live", "Live monitor")]
 
@@ -359,6 +360,52 @@ def _positions_frame(positions: list[dict[str, Any]]) -> pl.DataFrame:
     return pl.DataFrame(rows, schema=schema).sort("entry_ms", descending=True, nulls_last=True)
 
 
+def _compact(v: float | None) -> str:
+    """1,370,026.58 -> 1.37M (token amounts span many magnitudes)."""
+    if v is None or (isinstance(v, float) and math.isnan(v)):
+        return "–"
+    a = abs(v)
+    for div, suffix in ((1e12, "T"), (1e9, "B"), (1e6, "M"), (1e3, "K")):
+        if a >= div:
+            return f"{v / div:,.2f}{suffix}"
+    return f"{v:,.2f}"
+
+
+def signed_badge(v: float | None, kind: str = "pct") -> str:
+    """A return / PnL as a green (gain) or red (loss) badge."""
+    if v is None or (isinstance(v, float) and math.isnan(v)):
+        return "<span class='sig flat'>–</span>"
+    cls = "up" if v > 0 else "down" if v < 0 else "flat"
+    text = f"{100 * v:+.2f}%" if kind == "pct" else f"{v:+.4f}"
+    return f"<span class='sig {cls}'>{text}</span>"
+
+
+def positions_html(df: pl.DataFrame) -> str:
+    """Open positions as a fixed-layout list: it always fits its card (long mints wrap, narrow cards
+    switch to one block per position), so there is never a scroll bar."""
+    if df.is_empty():
+        return "<p class='muted'>No open positions.</p>"
+    cols = (("mint", "l", 29), ("strategy", "l", 17), ("tokens", "", 9), ("value (SOL)", "", 11), ("cost (SOL)", "", 11),
+            ("return", "", 11), ("entry (UTC)", "", 12))
+    colgroup = "".join(f"<col style='width:{w}%'>" for _, _, w in cols)
+    head = "".join(f"<th class='{c}'>{n}</th>" for n, c, _ in cols)
+    rows = []
+    for r in df.iter_rows(named=True):
+        mint, strat = html.escape(str(r.get("mint") or "")), html.escape(str(r.get("strategy") or ""))
+        rows.append(
+            "<tr>"
+            f"<td class='l pm' data-l='mint' title='{mint}'>{mint}</td>"
+            f"<td class='l ps' data-l='strategy'><span class='pill' title='{strat}'>{strat}</span></td>"
+            f"<td data-l='tokens' title='{C.fmt_value(r.get('tokens'), 'num2')}'>{_compact(r.get('tokens'))}</td>"
+            f"<td data-l='value (SOL)'>{C.fmt_value(r.get('value_sol'), 'sol')}</td>"
+            f"<td data-l='cost (SOL)'>{C.fmt_value(r.get('cost_sol'), 'sol')}</td>"
+            f"<td data-l='return'>{signed_badge(r.get('ret'))}</td>"
+            f"<td data-l='entry (UTC)'>{C.fmt_value(r.get('entry_ms'), 'time_cs')}</td>"
+            "</tr>")
+    return (f"<div class='pwrap'><table class='ptbl'><colgroup>{colgroup}</colgroup><thead><tr>{head}</tr></thead>"
+            f"<tbody>{''.join(rows)}</tbody></table></div>")
+
+
 def live_body(state: dict[str, Any] | None, server: bool) -> str:
     """Content of the Live monitor for one snapshot of the trading session (``LiveTrader.snapshot``)."""
     if not state:
@@ -405,12 +452,9 @@ def live_body(state: dict[str, Any] | None, server: bool) -> str:
                             for k, d in brk.items()]) if brk else pl.DataFrame())
     lat_fmt = {**{k: "num1" for k in ("p50", "p90", "p99", "max", "budget_ms")}, "count": "int", "breaches": "int"}
     lat_hdr = {"budget_ms": "budget", "breaches": "over budget"}
-    pos_fmt = {"mint": "mono", "strategy": "text", "tokens": "num2", "value_sol": "sol", "cost_sol": "sol", "ret": "pct_c",
-               "entry_ms": "time_cs"}
-    pos_hdr = {"value_sol": "value (SOL)", "cost_sol": "cost (SOL)", "ret": "return", "entry_ms": "entry (UTC)"}
     return (f"{data}{status}<div class='kpis'>{tiles_html}</div>"
             f"<div class='card'><h3>Open positions{f' ({pos_df.height})' if pos_df.height else ''}</h3>"
-            f"{C.html_table(pos_df, formats=pos_fmt, headers=pos_hdr)}</div>"
+            f"{positions_html(pos_df)}</div>"
             f"<div class='card'><h3>Circuit breakers</h3>{C.html_table(brk_df, scroll=False)}</div>"
             f"<div class='card'><h3>Latency (ms)</h3>{C.html_table(lat_df, formats=lat_fmt, headers=lat_hdr, scroll=False)}</div>"
             f"<details class='card'><summary>Raw snapshot</summary><pre style='white-space:pre-wrap;font-size:11px;max-height:360px;overflow:auto'>"
@@ -463,7 +507,6 @@ main:has(#bt-root){max-width:1480px} #bt-root [hidden]{display:none!important}
 @keyframes bt-flow{to{stroke-dashoffset:-32}}
 @media (prefers-reduced-motion:reduce){.bt-flow path,.bt-health .bt-dot{animation:none}}
 .bt-side .kpis{grid-template-columns:repeat(auto-fill,minmax(130px,1fr))} .bt-side .kpi .v{font-size:18px}
-#bt-live{max-height:600px;overflow:auto}
 .bt-term:empty::before{content:"Output of a session started with \\"Run in dashboard\\" streams here.";color:#777}
 .bt-termhead{display:flex;justify-content:space-between;gap:10px;background:#1f1f1f;color:#cfcfcf;border-radius:10px 10px 0 0;padding:7px 12px;
   font-size:12.5px;margin-top:10px;border:1px solid #333;border-bottom:0} .bt-termhead b{color:#fff}
@@ -612,7 +655,8 @@ def page_builder(catalogue: list[dict[str, Any]], state: dict[str, Any] | None, 
         default = [catalogue[0]["name"]]
     chips = "".join(
         f"<label class='bt-chip'><input type='checkbox' value='{html.escape(s['name'])}'{' checked' if s['name'] in default else ''}>"
-        f"<span><b>{html.escape(s['label'])}</b><small>{html.escape(s['summary'])}"
+        f"<span><b>{html.escape(s['label'])}{' <span class=pill>tuned for hfts</span>' if s.get('tuned') else ''}</b>"
+        f"<small>{html.escape(s['summary'])}"
         f"{' · needs a model from train-model' if s['needs_model'] else ''}</small></span></label>"
         for s in catalogue)
     cfg = json.dumps({"modes": {k: {"feed": m["feed"], "desc": m["desc"]} for k, m in MODES.items()},

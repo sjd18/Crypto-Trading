@@ -52,6 +52,12 @@ def strategy_catalogue(settings: Any = None) -> list[dict[str, Any]]:
 
     overlay = getattr(getattr(settings, "strategy", None), "exit_overlay", None) or "rug_avoidance"
     active = set(getattr(getattr(settings, "strategy", None), "active", None) or [])
+    spaces = set(getattr(getattr(settings, "optimizer", None), "spaces", None) or [])
+    tuned: dict[str, Any] = {}
+    if settings is not None:
+        from pumpfun_hft.optimizer.tuned import load_tuned
+
+        tuned = load_tuned(dataset_root("real", settings))
     out = []
     for name, cls in sorted(STRATEGY_REGISTRY.items()):
         if name == overlay:
@@ -63,7 +69,8 @@ def strategy_catalogue(settings: Any = None) -> list[dict[str, Any]]:
         if summary.lower().startswith(label.lower()):  # "Mean reversion on failed pumps" -> "on failed pumps"
             summary = summary[len(label):].strip()
         out.append({"name": name, "label": label, "summary": summary,
-                    "needs_model": name == "ml_signal", "active": name in active})
+                    "needs_model": name == "ml_signal", "active": name in active, "space": "configured" if name in spaces else "derived",
+                    "tuned": name in tuned})
     return out
 
 
@@ -123,6 +130,51 @@ def parse_spec(d: dict[str, Any], known: set[str]) -> TradeSpec:
                      _num(d, "status_every", STATUS_EVERY_DEFAULT, 0.0, 3600.0) or 0.0, bool(d.get("flatten", True)), capital)
 
 
+OPT_METHODS = ("bayesian", "genetic", "random", "grid")
+OPT_OBJECTIVES = ("sharpe", "sortino", "profit_factor", "expectancy", "calmar", "total_return", "composite")
+
+
+@dataclass
+class OptimizeSpec:
+    """One ``hftr optimize`` run: tune ``strategy`` on the recorded real events (``last_hours`` = 0: all)."""
+
+    strategy: str
+    method: str = "bayesian"
+    trials: int = 32
+    last_hours: float = 0.0
+    objective: str = "sharpe"
+    workers: int = 4
+    final: bool = False
+
+
+def parse_optimize(d: dict[str, Any], known: set[str]) -> OptimizeSpec:
+    strategy = str(d.get("strategy") or "")
+    if strategy not in known:
+        raise ValueError("pick a strategy")
+    method, objective = str(d.get("method") or "bayesian"), str(d.get("objective") or "sharpe")
+    if method not in OPT_METHODS:
+        raise ValueError(f"method must be one of {', '.join(OPT_METHODS)}")
+    if objective not in OPT_OBJECTIVES:
+        raise ValueError(f"objective must be one of {', '.join(OPT_OBJECTIVES)}")
+    cpus = max(1, (os.cpu_count() or 2) - 1)
+    return OptimizeSpec(strategy, method, int(_num(d, "trials", 32, 4, 400) or 32), _num(d, "last_hours", 0.0, 0.0, 100_000.0) or 0.0,
+                        objective, int(_num(d, "workers", min(4, cpus), 1, cpus) or 1), bool(d.get("final", False)))
+
+
+def optimize_args(spec: OptimizeSpec) -> list[str]:
+    args = ["optimize", "--strategy", spec.strategy, "--method", spec.method, "--trials", str(spec.trials),
+            "--objective", spec.objective, "--workers", str(spec.workers)]
+    if spec.last_hours:
+        args += ["--last-hours", _g(spec.last_hours)]
+    if spec.final:
+        args.append("--final")
+    return args
+
+
+def optimize_line(spec: OptimizeSpec) -> str:
+    return " ".join(["hftr", *optimize_args(spec)])
+
+
 def _g(v: float) -> str:
     return f"{v:g}"
 
@@ -166,21 +218,31 @@ def dataset_root(kind: str, settings: Any) -> Path:
     return Path(env) if env else settings.datasets.root(kind)
 
 
+def _profile_argv(profile: str, settings: Any, config: str | Path | None, python: str | None) -> list[str]:
+    cfg = config or os.environ.get("HFT_CONFIG")
+    cfg_args = ["--config", str(cfg)] if cfg and Path(cfg).exists() else []
+    kind = MODES[profile]["dataset"]
+    return [python or sys.executable, "-m", "pumpfun_hft.main", *cfg_args, "--profile", profile, "--dataset", kind,
+            "--data-root", str(dataset_root(kind, settings))]
+
+
 def cli_argv(spec: TradeSpec, settings: Any, config: str | Path | None = None, python: str | None = None) -> list[str]:
     """argv that runs the spec exactly like the hft.ps1 function would (no shell involved)."""
     pre, args = trade_args(spec)
-    cfg = config or os.environ.get("HFT_CONFIG")
-    cfg_args = ["--config", str(cfg)] if cfg and Path(cfg).exists() else []
-    root = dataset_root(MODES[spec.mode]["dataset"], settings)
-    return [python or sys.executable, "-m", "pumpfun_hft.main", *cfg_args, "--profile", spec.mode,
-            "--dataset", MODES[spec.mode]["dataset"], "--data-root", str(root), *pre, "trade", *args]
+    return [*_profile_argv(spec.mode, settings, config, python), *pre, "trade", *args]
+
+
+def optimize_argv(spec: OptimizeSpec, settings: Any, config: str | Path | None = None, python: str | None = None) -> list[str]:
+    return [*_profile_argv("hftr", settings, config, python), *optimize_args(spec)]
 
 
 # --------------------------------------------------------------------------- running sessions
 @dataclass
 class Job:
     id: int
-    spec: TradeSpec
+    kind: str               # "trade" | "optimize"
+    mode: str               # profile the command runs under
+    stream: bool            # a live-stream session (graceful stop through the stop file)
     command: str
     data_root: Path
     stop_file: Path
@@ -190,10 +252,11 @@ class Job:
     total: int = 0          # lines ever read; index of the next line
     ended_ms: int | None = None
     stopping: bool = False
+    extra: dict[str, Any] = field(default_factory=dict)
 
 
 class JobRunner:
-    """At most one paper session started from the dashboard; its stdout + stderr are kept for the page.
+    """At most one job (a paper session, or an optimisation) per runner; its stdout + stderr are kept for the page.
 
     Stopping a live-stream session writes the stop file the CLI polls (``PUMPFUN_STOP_FILE``), so it ends
     the normal way: positions closed, final snapshot, events compacted. A replay is simply terminated."""
@@ -216,13 +279,20 @@ class JobRunner:
     def start(self, spec: TradeSpec) -> Job:
         if spec.mode == "hftl":
             raise ValueError("The dashboard never starts live trading. Copy the command into PowerShell instead.")
+        return self._launch(cli_argv(spec, self.settings, self.config, self.python), "trade", spec.mode, spec.stream,
+                            powershell_line(spec), "A session is already running; stop it first.")
+
+    def start_optimize(self, spec: OptimizeSpec) -> Job:
+        return self._launch(optimize_argv(spec, self.settings, self.config, self.python), "optimize", "hftr", False,
+                            optimize_line(spec), "An optimisation is already running; stop it first.", strategy=spec.strategy)
+
+    def _launch(self, argv: list[str], kind: str, mode: str, stream: bool, command: str, busy: str, **extra: Any) -> Job:
         with self._lock:
             if self.running():
-                raise ValueError("A session is already running; stop it first.")
-            argv = cli_argv(spec, self.settings, self.config, self.python)
-            root = dataset_root(MODES[spec.mode]["dataset"], self.settings)
+                raise ValueError(busy)
+            root = dataset_root(MODES[mode]["dataset"], self.settings)
             root.mkdir(parents=True, exist_ok=True)
-            stop_file = root / "dashboard-session.stop"
+            stop_file = root / f"dashboard-{kind}.stop"
             stop_file.unlink(missing_ok=True)
             env = {**os.environ, "PYTHONUNBUFFERED": "1", "PYTHONIOENCODING": "utf-8", "NO_COLOR": "1", "TERM": "dumb",
                    "COLUMNS": "180", "PUMPFUN_STOP_FILE": str(stop_file)}
@@ -230,7 +300,8 @@ class JobRunner:
             proc = subprocess.Popen(argv, cwd=self.project_root, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                     stderr=subprocess.STDOUT, env=env, creationflags=flags)
             self._ids += 1
-            job = Job(self._ids, spec, powershell_line(spec), root, stop_file, proc, int(time.time() * 1000))
+            job = Job(self._ids, kind, mode, stream, command, root, stop_file, proc, int(time.time() * 1000))
+            job.extra = dict(extra)
             job.lines.append(f"PS> {job.command}")
             job.total = 1
             self.job = job
@@ -243,17 +314,17 @@ class JobRunner:
             job.lines.append(raw.decode("utf-8", errors="replace").rstrip("\r\n"))
             job.total += 1
         job.proc.wait()
-        job.ended_ms = int(time.time() * 1000)
-        job.lines.append(f"[session ended, exit code {job.proc.returncode}]")
-        job.total += 1
         job.stop_file.unlink(missing_ok=True)
+        job.lines.append(f"[{'session' if job.kind == 'trade' else job.kind} ended, exit code {job.proc.returncode}]")
+        job.total += 1
+        job.ended_ms = int(time.time() * 1000)  # last: readers treat it as "everything above is final"
 
     def stop(self) -> bool:
         job = self.job
         if job is None or job.proc.poll() is not None:
             return False
         job.stopping = True
-        if job.spec.stream:
+        if job.stream:
             job.stop_file.touch()
             job.lines.append("[stop requested: closing positions and ending the session ...]")
             job.total += 1
@@ -269,9 +340,9 @@ class JobRunner:
         first = job.total - len(job.lines)  # index of the oldest line still kept
         start = max(since, first)
         lines = list(job.lines)[start - first:] if start < job.total else []
-        return {"job": {"id": job.id, "mode": job.spec.mode, "command": job.command, "running": job.proc.poll() is None,
+        return {"job": {"id": job.id, "kind": job.kind, "mode": job.mode, "command": job.command, "running": job.proc.poll() is None,
                         "stopping": job.stopping, "started_ms": job.started_ms, "ended_ms": job.ended_ms,
-                        "exit_code": job.proc.returncode, "dataset": MODES[job.spec.mode]["dataset"]},
+                        "exit_code": job.proc.returncode, "dataset": MODES[job.mode]["dataset"], **job.extra},
                 "lines": lines, "next": job.total, "skipped": max(0, first - since) if since else 0}
 
     def meta_path(self) -> Path | None:

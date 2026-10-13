@@ -38,7 +38,7 @@ from pumpfun_hft.optimizer.objective import objective_value
 from pumpfun_hft.optimizer.overfitting import deflated_sharpe_ratio, pbo_cscv, sharpe
 from pumpfun_hft.optimizer.search import Trial, run_search
 from pumpfun_hft.optimizer.space import ParamSpace
-from pumpfun_hft.optimizer.splits import TimeSplit, make_splits, walk_forward_folds
+from pumpfun_hft.optimizer.splits import TimeSplit, has_recording_gaps, make_splits, split_event_counts, walk_forward_folds
 from pumpfun_hft.utils.logging import get_logger
 
 log = get_logger("backtests")
@@ -92,8 +92,13 @@ class SplitEvaluator:
     """Evaluates parameter batches for one strategy on one split (serial or process pool)."""
 
     def __init__(self, settings: Settings, events: pl.DataFrame, metadata_path: str | None, strategy: str,
-                 n_workers: int, seed: int) -> None:
+                 n_workers: int, seed: int, progress: Any = None) -> None:
         self.settings = settings
+        #: ``progress(phase, n_done_in_phase, score, best_score)`` after every evaluation, in submission order
+        self.progress = progress
+        self.phase = "search"
+        self._done: dict[str, int] = {}
+        self._best: dict[str, float] = {}
         self.strategy = strategy
         self.seed = seed
         self.n_workers = max(1, n_workers)
@@ -117,8 +122,24 @@ class SplitEvaluator:
         assert self.split is not None
         tasks = [(self.strategy, p, self.warm_start, self.split.start_ms, self.split.end_ms, self.seed) for p in params_list]
         if self.pool is not None:
-            return list(self.pool.map(_evaluate, tasks))
-        return [_evaluate(t) for t in tasks]
+            futures = [self.pool.submit(_evaluate, t) for t in tasks]
+            out = []
+            for f in futures:  # in order: each result is reported as soon as it and those before it are done
+                out.append(f.result())
+                self._report(out[-1][0])
+            return out
+        out = []
+        for t in tasks:
+            out.append(_evaluate(t))
+            self._report(out[-1][0])
+        return out
+
+    def _report(self, score: float) -> None:
+        if self.progress is None:
+            return
+        n = self._done[self.phase] = self._done.get(self.phase, 0) + 1
+        best = self._best[self.phase] = max(self._best.get(self.phase, -math.inf), score)
+        self.progress(self.phase, n, score, best)
 
     def close(self) -> None:
         if self.pool is not None:
@@ -162,6 +183,17 @@ class StudyResult:
     test_metrics: dict[str, Any] | None = None
     live_sim_metrics: dict[str, Any] | None = None
     unseal_log: list[dict[str, Any]] = field(default_factory=list)
+    selected_train_score: float | None = None
+    selected_val_score: float | None = None
+    #: the parameters in use before the study, scored on the same train / validation periods
+    baseline_params: dict[str, Any] | None = None
+    baseline_train_metrics: dict[str, Any] | None = None
+    baseline_val_metrics: dict[str, Any] | None = None
+    baseline_train_score: float | None = None
+    baseline_val_score: float | None = None
+    #: "time" (clock-time fractions) or "events" (event-count quantiles, for recordings with gaps)
+    split_mode: str = "time"
+    split_events: dict[str, int] = field(default_factory=dict)
 
     def trials_frame(self) -> pl.DataFrame:
         rows = [{"trial": t["number"], "score": t["score"], **{f"p_{k}": v for k, v in t["params"].items()},
@@ -180,8 +212,10 @@ class OptimizationStudy:
     """
 
     def __init__(self, settings: Settings, events: pl.DataFrame, metadata_path: str | None, strategy: str,
-                 method: str | None = None, n_trials: int | None = None, seed: int | None = None, n_workers: int | None = None) -> None:
+                 method: str | None = None, n_trials: int | None = None, seed: int | None = None, n_workers: int | None = None,
+                 progress: Any = None) -> None:
         self.s = settings
+        self.progress = progress
         self.events = events
         self.metadata_path = metadata_path
         self.strategy = strategy
@@ -193,14 +227,25 @@ class OptimizationStudy:
             raise KeyError(f"no optimizer.spaces entry for {strategy}")
         self.space = ParamSpace(settings.optimizer.spaces[strategy])
 
-    def run(self, final_evaluation: bool = False) -> StudyResult:
+    def run(self, final_evaluation: bool = False, baseline: dict[str, Any] | None = None) -> StudyResult:
+        """``baseline``: the current parameters, scored on train and validation next to the selected ones."""
         o = self.s.optimizer
         start, end = int(self.events["ts_ms"].min()), int(self.events["ts_ms"].max()) + 1
-        splits = make_splits(start, end, o.splits)
-        ev = SplitEvaluator(self.s, self.events, self.metadata_path, self.strategy, self.n_workers, self.seed)
+        ts = self.events["ts_ms"].to_numpy()
+        gappy = has_recording_gaps(ts)
+        splits = make_splits(start, end, o.splits, ts if gappy else None)
+        split_events = split_event_counts(ts, splits)
+        if self.progress is not None:
+            self.progress("splits", 0, 0.0, 0.0, {"mode": "events" if gappy else "time", "events": split_events,
+                                                  "windows": splits.describe(),
+                                                  "embargo_s": splits.embargo_ms / 1000})
+        ev = SplitEvaluator(self.s, self.events, self.metadata_path, self.strategy, self.n_workers, self.seed, self.progress)
         try:
             ev.use(splits.train, start)
+            ev.phase = "search"
             trials = run_search(self.method, self.space, ev, o, self.seed, self.n_trials, batch=self.n_workers)
+            ev.phase = "current parameters"
+            base_train = ev([baseline])[0] if baseline else None
             ranked = sorted(trials, key=lambda t: t.score, reverse=True)
             if o.selection == "plateau":
                 plateau = _plateau_scores(self.space, trials)
@@ -209,7 +254,9 @@ class OptimizationStudy:
             else:
                 cands = ranked[: o.top_k]
             ev.use(splits.validation, start)
-            val = ev([c.params for c in cands])
+            ev.phase = "validation"
+            val = ev([c.params for c in cands] + ([baseline] if baseline else []))
+            base_val = val.pop() if baseline else None
             cand_rows = [{"params": c.params, "train_score": c.score, "val_score": v[0], "val_metrics": v[1]["metrics"],
                           "train_metrics": c.info.get("metrics")} for c, v in zip(cands, val, strict=True)]
             best_i = int(np.argmax([r["val_score"] for r in cand_rows]))
@@ -221,7 +268,13 @@ class OptimizationStudy:
                 study_id=f"study-{uuid.uuid4().hex[:8]}", strategy=self.strategy, method=self.method, splits=splits.describe(),
                 trials=[{"number": t.number, "params": t.params, "score": t.score, "metrics": t.info.get("metrics")} for t in trials],
                 candidates=cand_rows, selected_params=chosen.params, selected_train_metrics=chosen.info.get("metrics") or {},
-                selected_val_metrics=cand_rows[best_i]["val_metrics"], dsr=dsr, pbo=pbo)
+                selected_val_metrics=cand_rows[best_i]["val_metrics"], dsr=dsr, pbo=pbo,
+                selected_train_score=chosen.score, selected_val_score=cand_rows[best_i]["val_score"],
+                split_mode="events" if gappy else "time", split_events=split_events)
+            if baseline and base_train is not None and base_val is not None:
+                result.baseline_params = baseline
+                result.baseline_train_score, result.baseline_train_metrics = base_train[0], base_train[1]["metrics"]
+                result.baseline_val_score, result.baseline_val_metrics = base_val[0], base_val[1]["metrics"]
             if final_evaluation:
                 test = splits.test.unseal(f"final evaluation of {self.strategy} {chosen.params}")
                 ev.use(test, start)

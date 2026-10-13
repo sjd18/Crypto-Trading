@@ -85,3 +85,32 @@ class ParamSpace:
 
     def key(self, params: dict[str, Any]) -> tuple[Any, ...]:
         return tuple(round(params[n], 10) if isinstance(params[n], float) else params[n] for n in self.names)
+
+
+#: parameters that are not tuned when a space is derived (paths, switches of other components)
+_NOT_TUNED = {"model_path"}
+
+
+def derive_space(params: dict[str, Any], spread: float = 0.5) -> dict[str, ParamSpec]:
+    """A search space around a strategy's current parameters, for strategies without an
+    ``optimizer.spaces`` entry: numbers range over value x (1 -/+ ``spread``) (probabilities and
+    fractions stay inside [0, 1]), booleans try both; zero / text parameters are left alone."""
+    out: dict[str, ParamSpec] = {}
+    for name, v in params.items():
+        if name in _NOT_TUNED or v is None or isinstance(v, str):
+            continue
+        if isinstance(v, bool):
+            out[name] = ParamSpec(type="categorical", choices=[v, not v])
+        elif isinstance(v, int):
+            if v == 0:
+                continue
+            lo, hi = sorted((round(v * (1 - spread)), round(v * (1 + spread))))
+            out[name] = ParamSpec(type="int", low=float(max(0, lo) if v > 0 else lo), high=float(max(hi, lo + 1)))
+        elif isinstance(v, float):
+            if v == 0.0:
+                continue
+            lo, hi = sorted((v * (1 - spread), v * (1 + spread)))
+            if 0.0 < v < 1.0:
+                lo, hi = max(0.0, lo), min(1.0, hi)
+            out[name] = ParamSpec(type="float", low=lo, high=hi)
+    return out

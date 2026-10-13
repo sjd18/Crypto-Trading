@@ -124,3 +124,43 @@ def test_objective_constraints() -> None:
     assert objective_value({**ok, "max_drawdown": 0.5}, "sharpe", 20, 30.0) < PENALTY / 2
     short = {"n_trades": 50, "max_drawdown": 0.1, "calmar": float("nan"), "recovery_factor": 0.8}
     assert objective_value(short, "calmar", 20, 30.0) == pytest.approx(0.8)
+
+
+def test_gappy_recordings_split_by_event_count() -> None:
+    from types import SimpleNamespace
+
+    import numpy as np
+
+    from pumpfun_hft.optimizer.splits import has_recording_gaps, make_splits, split_event_counts
+
+    cfg = SimpleNamespace(train=0.5, validation=0.2, test=0.2, live_sim=0.1, embargo_s=60.0)
+    day = 86_400_000
+    # three recorded days spread over 14: clock-time validation (days 7-9.8) would hold no events at all
+    ts = np.concatenate([np.arange(0, day, 1000), np.arange(10 * day, 11 * day, 1000), np.arange(13 * day, 14 * day, 1000)])
+    assert has_recording_gaps(ts) and not has_recording_gaps(np.arange(0, 3 * day, 1000))
+    by_time = split_event_counts(ts, make_splits(int(ts[0]), int(ts[-1]) + 1, cfg))
+    assert by_time["validation"] == 0
+    by_events = split_event_counts(ts, make_splits(int(ts[0]), int(ts[-1]) + 1, cfg, ts))
+    total = ts.size
+    for name, frac in (("train", 0.5), ("validation", 0.2), ("test", 0.2), ("live_sim", 0.1)):
+        assert abs(by_events[name] / total - frac) < 0.01, (name, by_events)
+    sp = make_splits(int(ts[0]), int(ts[-1]) + 1, cfg, ts)
+    assert sp.train.end_ms + 60_000 == sp.validation.start_ms  # embargo kept, order kept
+
+
+def test_event_splits_never_lose_a_split_to_the_embargo() -> None:
+    from types import SimpleNamespace
+
+    import numpy as np
+
+    from pumpfun_hft.optimizer.splits import make_splits, split_event_counts
+
+    cfg = SimpleNamespace(train=0.5, validation=0.2, test=0.2, live_sim=0.1, embargo_s=1800.0)
+    hour = 3_600_000
+    # a quiet day followed by a dense 30-minute recording that holds most of the events
+    ts = np.concatenate([np.arange(0, 20 * hour, 60_000), np.arange(20 * hour, 20 * hour + hour // 2, 2)])
+    sp = make_splits(int(ts[0]), int(ts[-1]) + 1, cfg, ts)
+    counts = split_event_counts(ts, sp)
+    assert all(counts[k] > 0.05 * ts.size for k in ("validation", "test", "live_sim")), counts
+    assert 0 < sp.embargo_ms < 1_800_000
+

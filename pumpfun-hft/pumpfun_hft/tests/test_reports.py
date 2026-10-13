@@ -178,7 +178,7 @@ def dash(tmp_settings: Any, backtest_result: BacktestResult, events: pl.DataFram
 
 def test_every_dashboard_page_renders(dash: Any) -> None:
     client, _, _, r = dash
-    assert len(PAGES) == 11
+    assert len(PAGES) == 13
     for key, label in PAGES:
         resp = client.get(f"/{key}", params={"run": r.run_id})
         assert resp.status_code == 200, key
@@ -246,14 +246,14 @@ def test_open_positions_table(dash: Any) -> None:
     try:
         body = client.get("/api/live/html").text
         table = body.split("Open positions (2)", 1)[1].split("Circuit breakers", 1)[0]
-        heads = [h.split(">", 1)[1] for h in table.split("</th>")[:-1]]
-        assert [h.rsplit(">", 1)[-1] for h in heads] == ["mint", "strategy", "tokens", "value (SOL)", "cost (SOL)", "return",
-                                                         "entry (UTC)"]
+        assert "class='ptbl'" in table and "class=\"scroll\"" not in table                  # fixed layout, no scroll box
+        heads = [h.rsplit(">", 1)[-1] for h in table.split("</th>")[:-1]]
+        assert heads == ["mint", "strategy", "tokens", "value (SOL)", "cost (SOL)", "return", "entry (UTC)"]
         assert f">{win}<" in table and f">{loss}<" in table and "not shown" not in table   # full mint, nothing extra
-        assert 'class="pos" data-v="0.234">+23.40%' in table and 'class="neg" data-v="-0.5">-50.00%' in table
+        assert "<span class='sig up'>+23.40%</span>" in table and "<span class='sig down'>-50.00%</span>" in table
         assert ">10:40:00.12<" in table and ">10:40:04.56<" in table                        # hundredths of a second
         assert table.index(loss) < table.index(win)                                          # newest entry first
-        assert ">1,234,567.89<" in table and "0.1234" in table  # whole tokens, not base units
+        assert ">1.23M<" in table and ">0.1234<" in table                                    # whole tokens, compact
         assert_safe(body)
     finally:
         meta.set_state("live", old)

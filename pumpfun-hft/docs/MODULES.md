@@ -355,12 +355,14 @@ Purpose
 
 Architecture
     space.py        ParamSpace: float / int / log-float / categorical; sampling, grids, [0,1]^d encoding
+                    derive_space: a space around current parameters for strategies without one
     search.py       grid, random, Bayesian (GP Matérn-5/2 + EI, constant-liar batches), genetic
     objective.py    objective functions with min-trade and max-drawdown constraints
     splits.py       embargoed train / validation / test / live-sim splits (test & live-sim sealed),
                     rolling or anchored walk-forward folds
     overfitting.py  Probabilistic & Deflated Sharpe Ratio, PBO via CSCV
     study.py        OptimizationStudy and WalkForwardAnalysis (process-pool evaluation)
+    tuned.py        tuned_params.json: parameters saved from a study for hfts (load / save / overrides)
 
 Data flow
     events -> make_splits -> search(train) -> top-k -> validation selection -> DSR/PBO
@@ -383,6 +385,7 @@ Example
 - **`optimizer/space.py`** — Parameter spaces: sampling, grids and [0, 1]^d encoding for model-based optimisers.
 - **`optimizer/splits.py`** — Chronological data splits with embargo, sealed hold-out sets and walk-forward folds.
 - **`optimizer/study.py`** — Optimisation studies and walk-forward analysis on chronological splits.
+- **`optimizer/tuned.py`** — Tuned strategy parameters: the result of an optimisation study, saved from the dashboard's Strategy Parameters page and applied to paper trading on the live stream (``hfts``).
 
 ## `pumpfun_hft.analytics`
 
@@ -484,6 +487,8 @@ Architecture
     infra.py     BlockhashCache, PriorityFeeEstimator, ConfirmationTracker, JitoClient
     signer.py    WalletSigner (solders): signing, compute-budget + tip composition
     replay.py    replay_live: recorded events through LiveTrader + PaperGateway on virtual time
+    sessions.py  session archive: every live-stream session saved (trades, fills, equity, signals,
+                 parameters, market statistics) for the Recent Session Breakdown page
 
 Data flow
     LiveStreamCollector -> LiveTrader.on_event -> StrategyRuntime -> queue -> gateway.execute
@@ -510,6 +515,7 @@ Example
 - **`execution/gateway.py`** — Execution gateways: paper (simulated fills on live data) and live (real transactions).
 - **`execution/infra.py`** — Live execution infrastructure: blockhash cache, priority-fee estimator, confirmation tracker, Jito.
 - **`execution/replay.py`** — Replay recorded events through the live trading engine with the paper gateway.
+- **`execution/sessions.py`** — Session archive: every paper / live trading session on the live stream is saved, so it can be broken down afterwards (dashboard: Recent Session Breakdown) and its strategies tuned on real data.
 - **`execution/signer.py`** — Wallet signing (``solders``). The private key is read from ``PRIVATE_KEY`` in ``.env`` only.
 
 ## `pumpfun_hft.dashboard`
@@ -527,7 +533,10 @@ Architecture
               Heatmaps (weekday x hour PnL), Wallet explorer, Token explorer (price + our fills),
               Feature importance, Strategy comparison, Live monitor (polls the live snapshot)
     builder.py  strategy builder: hft / hftr / hfts / hftl + strategies + duration -> the PowerShell
-              command; runs paper sessions (never hftl) with their raw output; RPC / session health
+              command; runs paper sessions (never hftl) and optimisations with their raw output;
+              RPC / session health
+    trading_views.py  Recent Session Breakdown (the session archive) and Strategy Parameters
+              (optimisation studies, verdicts, Save for hfts)
 
 Data flow
     reports/runs/<run_id>/{result.json, *.parquet, wallets.parquet, tokens.parquet}
@@ -549,6 +558,7 @@ Example
 
 - **`dashboard/app.py`** — Local analytics dashboard (FastAPI + Plotly, fully offline).
 - **`dashboard/builder.py`** — Strategy builder: compose a ``trade`` command (profile + strategies + duration + options), show it as the PowerShell line to type, and run paper sessions from the dashboard with their raw output.
+- **`dashboard/trading_views.py`** — Dashboard pages over the session archive and strategy tuning.
 - **`dashboard/views.py`** — Dashboard page renderers (shared by the FastAPI app and the static single-file export).
 
 ## `pumpfun_hft.database`

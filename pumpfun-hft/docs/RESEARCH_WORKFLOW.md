@@ -46,10 +46,21 @@ slippage vs the decision-time quote, and every cost component.
 ```bash
 python -m pumpfun_hft.main optimize --strategy smart_money --method bayesian --trials 40
 python -m pumpfun_hft.main optimize --strategy smart_money --method bayesian --trials 40 --final   # unseal once
+hftr optimize --strategy whale_follow --trials 32 --workers 6 --last-hours 24 --objective sortino   # real data, last 24 h
 ```
 
+`--last-hours N` tunes on only the most recent N hours of events; `--objective` overrides
+`optimizer.objective`. A strategy without an `optimizer.spaces` entry gets a space derived from its
+current parameters (each number from 0.5x to 1.5x, probabilities kept in [0, 1], booleans both
+ways). Every study also scores the **current** parameters on the same train and validation periods
+(`baseline_*` in `study.json`), and prints one progress line per trial. The dashboard's
+**Strategy Parameters** tab runs the same command and reads the studies (see docs/DASHBOARD.md).
+
 1. **Splits.** Time is cut into `train / validation / test / live_sim` (`optimizer.splits`) with an
-   embargo between them. Only tokens created inside a split trade in it; earlier data warms up
+   embargo between them. When the recording has gaps (more than 10 % of the span in gaps longer
+   than an hour), the boundaries fall at event-count quantiles instead of clock-time fractions, so
+   no split lands in an unrecorded stretch; the embargo is then capped at a quarter of the shortest
+   split. `study.json` records `split_mode` and the events in each split. Only tokens created inside a split trade in it; earlier data warms up
    wallet and creator state (past information only).
 2. **Search on train** with grid, random, Bayesian (Gaussian process with an ARD Matérn-5/2
    kernel, expected improvement, constant-liar batches for parallel workers) or a genetic
@@ -68,6 +79,12 @@ python -m pumpfun_hft.main optimize --strategy smart_money --method bayesian --t
    with a reason in `study.json` (`unseal_log`), so every look at the hold-out is auditable.
 
 Outputs: `pumpfun_hft/reports/optimize/<study_id>/{trials.parquet, study.json}`.
+
+**Tuned parameters for hfts.** Saving a study from the Strategy Parameters tab writes its selected
+parameters to `tuned_params.json` in the real data set folder. Only `--profile hfts` (paper trading
+on the live stream) loads it; explicit `--set strategy.params.*` values still win, backtests keep
+the configured parameters (so tuned values are never judged on the data they were fitted to), and
+every saved session records which strategies ran tuned and from which study.
 
 ## 4. Walk-forward
 

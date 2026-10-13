@@ -12,6 +12,8 @@ Architecture
     infra.py     BlockhashCache, PriorityFeeEstimator, ConfirmationTracker, JitoClient
     signer.py    WalletSigner (solders): signing, compute-budget + tip composition
     replay.py    replay_live: recorded events through LiveTrader + PaperGateway on virtual time
+    sessions.py  session archive: every live-stream session saved (trades, fills, equity, signals,
+                 parameters, market statistics) for the Recent Session Breakdown page
 
 Data flow
     LiveStreamCollector -> LiveTrader.on_event -> StrategyRuntime -> queue -> gateway.execute

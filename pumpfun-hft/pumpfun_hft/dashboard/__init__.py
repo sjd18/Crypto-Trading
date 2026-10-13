@@ -10,7 +10,10 @@ Architecture
               Heatmaps (weekday x hour PnL), Wallet explorer, Token explorer (price + our fills),
               Feature importance, Strategy comparison, Live monitor (polls the live snapshot)
     builder.py  strategy builder: hft / hftr / hfts / hftl + strategies + duration -> the PowerShell
-              command; runs paper sessions (never hftl) with their raw output; RPC / session health
+              command; runs paper sessions (never hftl) and optimisations with their raw output;
+              RPC / session health
+    trading_views.py  Recent Session Breakdown (the session archive) and Strategy Parameters
+              (optimisation studies, verdicts, Save for hfts)
 
 Data flow
     reports/runs/<run_id>/{result.json, *.parquet, wallets.parquet, tokens.parquet}

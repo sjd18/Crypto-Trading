@@ -201,7 +201,10 @@ BACKTESTING
               rug_avoidance (exit overlay)
 
 OPTIMISATION AND VALIDATION
+  hfts dashboard  -> Strategy Parameters tab: tune on real data, Save for hfts (hfts then uses them)
+                  -> Recent Session Breakdown tab: every hfts / hftl session, per-strategy PnL and trades
   hftr optimize --strategy smart_money --method bayesian --trials 32
+  hftr optimize --strategy whale_follow --last-hours 24 --workers 6   recent data only, 6 in parallel
   hftr optimize --strategy smart_money --final                 also score the sealed test set
   hftr walkforward --strategy momentum_ignition                rolling out-of-sample folds
       --method: grid | random | bayesian | genetic
