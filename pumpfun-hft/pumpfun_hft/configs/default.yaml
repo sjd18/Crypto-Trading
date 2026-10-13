@@ -267,6 +267,10 @@ position:
     - {at_pct: 100.0, sell_frac: 0.35}
     - {at_pct: 250.0, sell_frac: 1.0}
   trailing_stop: {enabled: true, activation_pct: 30.0, trail_pct: 20.0}
+  # once a position has been up activation_pct (net), it is closed when its net return falls to
+  # floor_pct or trail_pct below its best value, whichever is higher; before that the normal
+  # stop_loss_pct applies. Returns are net of exit fees and our own price impact.
+  profit_lock: {enabled: true, activation_pct: 20.0, floor_pct: 5.0, trail_pct: 10.0}
   max_hold_s: 900.0
   breakeven_after_first_tp: true
   exit_on_curve_complete: false

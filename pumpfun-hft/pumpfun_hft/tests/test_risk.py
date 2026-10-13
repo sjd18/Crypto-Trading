@@ -129,7 +129,8 @@ def _pos(total_cost: int = SOL, **kw) -> Position:
 
 def test_position_manager_rules() -> None:
     s = make_settings(**{"position.stop_loss_pct": 25.0, "position.max_hold_s": 600.0,
-                         "position.trailing_stop": {"enabled": True, "activation_pct": 30.0, "trail_pct": 20.0}})
+                         "position.trailing_stop": {"enabled": True, "activation_pct": 30.0, "trail_pct": 20.0},
+                         "position.profit_lock.enabled": False})  # the profit lock has its own test
     pm = PositionManager(s.position)
     assert pm.check(_pos(), int(0.74 * SOL), 1.0, 1_000).action is Action.EXIT  # stop loss
     assert pm.check(_pos(), int(0.9 * SOL), 1.0, 601_000).action is Action.EXIT  # max hold
@@ -150,6 +151,36 @@ def test_exit_overrides_replace_defaults() -> None:
     assert pm.check(_pos(exit_overrides=ov), int(0.94 * SOL), 1.0, 1_000).action is Action.EXIT
     assert "take profit" in pm.check(_pos(exit_overrides=ov), int(1.11 * SOL), 1.0, 1_000).reason
     assert pm.check(_pos(exit_overrides=ov), SOL, 1.0, 31_000).reason == "max hold time"
+
+
+def test_profit_lock_keeps_a_winner_positive() -> None:
+    s = make_settings(**{"position.stop_loss_pct": 25.0, "position.max_hold_s": 600.0,
+                         "position.trailing_stop": {"enabled": False, "activation_pct": 30.0, "trail_pct": 20.0},
+                         "position.profit_lock": {"enabled": True, "activation_pct": 20.0, "floor_pct": 5.0, "trail_pct": 10.0}})
+    pm = PositionManager(s.position)
+    # never reached +20 %: the original stop loss applies, a pullback to +1 % or -20 % is held
+    assert pm.check(_pos(mfe=0.19), int(1.01 * SOL), 1.0, 1_000) is None
+    assert pm.check(_pos(mfe=0.19), int(0.80 * SOL), 1.0, 1_000) is None
+    assert "stop loss" in pm.check(_pos(mfe=0.19), int(0.74 * SOL), 1.0, 1_000).reason
+    # reached +20 %: locked at 1.20 x 0.90 - 1 = +8 %
+    assert pm.profit_lock_level(_pos(mfe=0.20), 0.15) == pytest.approx(0.08)
+    assert pm.check(_pos(mfe=0.20), int(1.09 * SOL), 1.0, 1_000) is None
+    lock = pm.check(_pos(mfe=0.20), int(1.08 * SOL), 1.0, 1_000)
+    assert lock.action is Action.EXIT and lock.reason.startswith("profit lock +8.0%")
+    # a gap straight through the lock (e.g. a dump) still exits at once, whatever the price
+    assert pm.check(_pos(mfe=0.25), int(0.60 * SOL), 1.0, 1_000).reason.startswith("profit lock")
+    # reached +50 %: the trail (1.5 x 0.9 - 1 = +35 %) is above the +5 % floor
+    assert pm.profit_lock_level(_pos(mfe=0.50), 0.4) == pytest.approx(0.35)
+    assert pm.check(_pos(mfe=0.50), int(1.36 * SOL), 1.0, 1_000) is None
+    assert pm.check(_pos(mfe=0.50), int(1.34 * SOL), 1.0, 1_000).action is Action.EXIT
+    # the current mark counts as the best value even before Portfolio.mark recorded it
+    assert pm.profit_lock_level(_pos(mfe=0.0), 0.22) == pytest.approx(0.098)
+    # the floor binds when the trail would be lower (a wider trail)
+    wide = PositionManager(make_settings(**{"position.profit_lock": {"enabled": True, "activation_pct": 20.0, "floor_pct": 5.0,
+                                                                     "trail_pct": 30.0}}).position)
+    assert wide.profit_lock_level(_pos(mfe=0.20)) == pytest.approx(0.05)
+    off = PositionManager(make_settings(**{"position.profit_lock.enabled": False}).position)
+    assert off.profit_lock_level(_pos(mfe=0.5)) is None
 
 
 def test_portfolio_round_trip_accounting() -> None:

@@ -391,6 +391,13 @@ class TrailingCfg(Strict):
     trail_pct: float
 
 
+class ProfitLockCfg(Strict):
+    enabled: bool
+    activation_pct: float   # best net return that arms the lock
+    floor_pct: float        # never exit below this net return once armed
+    trail_pct: float        # exit when the position's value falls this far below its best value
+
+
 class PyramidCfg(Strict):
     enabled: bool
     max_adds: int
@@ -403,6 +410,7 @@ class PositionCfg(Strict):
     stop_loss_pct: float
     take_profit: list[TakeProfitLevel]
     trailing_stop: TrailingCfg
+    profit_lock: ProfitLockCfg
     max_hold_s: float
     breakeven_after_first_tp: bool
     exit_on_curve_complete: bool

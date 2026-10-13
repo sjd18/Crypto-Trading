@@ -70,7 +70,10 @@ price impact is below `max_impact_bps`.
 ## Exits (`risk/position_manager.py`)
 
 Stop loss, a take-profit ladder of partial exits (`SCALE_OUT`, the last level closes), a trailing
-stop that activates after `activation_pct`, breakeven after the first take-profit, a maximum
+stop that activates after `activation_pct`, a profit lock (`position.profit_lock`: once the best
+net return reaches +20 %, the position is closed at the higher of +5 % and 10 % below its best
+value, so a +20 % peak exits at +8 % at the latest and a +50 % peak at +35 %; below +20 % the
+normal stop loss applies), breakeven after the first take-profit, a maximum
 holding time and optional pyramiding (`SCALE_IN` after `add_trigger_pct` with enough
 confidence). Every rule works on **liquidation value**, the SOL you would actually receive.
 Strategies can override the stop, target and max hold per position (`Signal.exit_overrides`).

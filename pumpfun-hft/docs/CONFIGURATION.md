@@ -36,7 +36,7 @@ Units follow the key suffix: `*_sol` in SOL, `*_lamports` in lamports, `*_bps` i
 | `backtest` | capital, replay mode, candle interval, mark-to-market, equity sampling, sweep interval, default order type, limit offset / TTL, minimum order, cash reserve, annualisation, return-bar size |
 | `risk.limits`, `risk.breakers`, `risk.sectors` | loss and exposure limits, per-token order rate; breaker thresholds and cooldown; sector keywords |
 | `sizing` | method and its parameters, confidence scaling, impact cap, maximum equity fraction |
-| `position` | stop loss, take-profit ladder, trailing stop, max hold, breakeven, pyramiding |
+| `position` | stop loss, take-profit ladder, trailing stop, profit lock (floor + trail once a winner is armed), max hold, breakeven, pyramiding |
 | `features` | window lengths, EWMA half-lives, bar size, whale / aggressive thresholds, fresh-wallet window, smart threshold |
 | `discovery` | outcome horizon and definitions (success multiple, rug liquidity drawdown, creator sell share), creator priors and score weights, metadata fetching |
 | `wallet_intel` | ranking minimums, prior strength, sniper / whale / market-maker / bot / insider / rug-wallet rules |
